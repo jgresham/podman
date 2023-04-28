@@ -7,7 +7,7 @@ While "containers are Linux," Podman also runs on Mac and Windows, where it
 provides a native CLI and embeds a guest Linux system to launch your
 containers. This guest is referred to as a Podman machine and is managed with
 the `podman machine` command. On Windows, each Podman machine is backed by a
-virtualized Windows System for Linux (WSLv2) distribution. The podman command
+virtualized Windows Subsystem for Linux (WSLv2) distribution. The podman command
 can be run directly from your Windows PowerShell (or CMD) prompt, where it
 remotely communicates with the podman service running in the WSL environment.
 Alternatively, you can access Podman directly from the WSL instance if you
@@ -40,11 +40,9 @@ Installing Podman
 Installing the Windows Podman client begins by downloading the Podman Windows
 installer. The Windows installer is built with each Podman release and can be
 downloaded from the official
- [Github release page](https://github.com/containers/podman/releases). The
-Windows installer file is named podman-#.#.#-setup.exe, where the # symbols
-represent the version number of Podman. Be sure to download a 4.1 or later
-release for the capabilities discussed in this guide.
-As of 2023-01-16 the latest version is [v4.3.1](https://github.com/containers/podman/releases/download/v4.3.1/podman-4.3.1-setup.exe).
+ [Github release page](https://github.com/containers/podman/releases).
+Be sure to download a 4.1 or later release for the capabilities discussed
+in this guide.
 
 ![Installing Podman 4.1.0](podman-win-install.jpg)
 
@@ -185,7 +183,7 @@ following PowerShell command in your terminal session:
 
 Or in a classic CMD prompt:
 
-        set DOCKER_HOST = 'npipe:////./pipe/podman-machine-default'
+        set DOCKER_HOST=npipe:////./pipe/podman-machine-default
 
 Alternatively, terminate the other process and restart podman machine.
 Machine "podman-machine-default" started successfully

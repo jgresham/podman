@@ -272,8 +272,7 @@ Deleted: $pauseID" "infra images gets removed as well"
     pname=$(random_string)
     run_podman create --pod new:$pname $IMAGE
 
-    run_podman version --format "{{.Server.Version}}-{{.Server.Built}}"
-    pauseImage=localhost/podman-pause:$output
+    pauseImage=$(pause_image)
     run_podman inspect --format '{{.ID}}' $pauseImage
     pauseID=$output
 
@@ -308,6 +307,19 @@ Deleted: $pauseID"
     is "$output" "Error: bogus: image not known" "Should print error"
     run_podman image rm --force bogus
     is "$output" "" "Should print no output"
+}
+
+@test "podman images - commit docker with comment" {
+    run_podman run --name my-container -itd $IMAGE sleep 1d
+    run_podman 125 commit -m comment my-container my-test-image
+    assert "$output" == "Error: messages are only compatible with the docker image format (-f docker)" "podman should fail unless docker format"
+    run_podman commit my-container --format docker -m comment my-test-image
+    run_podman commit -q my-container --format docker -m comment my-test-image
+    assert "$output" =~ "^[0-9a-f]{64}\$" \
+           "Output is a commit ID, no warnings or other output"
+
+    run_podman rmi my-test-image
+    run_podman rm my-container --force -t 0
 }
 
 # vim: filetype=sh

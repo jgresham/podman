@@ -12,6 +12,7 @@ import (
 
 	"github.com/containers/podman/v4/pkg/systemd/parser"
 	"github.com/containers/podman/v4/pkg/systemd/quadlet"
+	"github.com/containers/podman/v4/version/rawversion"
 )
 
 // This commandline app is the systemd generator (system and user,
@@ -25,8 +26,9 @@ import (
 var (
 	verboseFlag bool // True if -v passed
 	noKmsgFlag  bool
-	isUser      bool // True if run as quadlet-user-generator executable
-	dryRun      bool // True if -dryrun is used
+	isUserFlag  bool // True if run as quadlet-user-generator executable
+	dryRunFlag  bool // True if -dryrun is used
+	versionFlag bool // True if -version is used
 )
 
 var (
@@ -281,7 +283,7 @@ func isUnambiguousName(imageName string) bool {
 //
 // We implement a simple version of this from scratch here to avoid
 // a huge dependency in the generator just for a warning.
-func warnIfAmbigiousName(container *parser.UnitFile) {
+func warnIfAmbiguousName(container *parser.UnitFile) {
 	imageName, ok := container.Lookup(quadlet.ContainerGroup, quadlet.KeyImage)
 	if !ok {
 		return
@@ -294,32 +296,37 @@ func warnIfAmbigiousName(container *parser.UnitFile) {
 func main() {
 	exitCode := 0
 	prgname := path.Base(os.Args[0])
-	isUser = strings.Contains(prgname, "user")
+	isUserFlag = strings.Contains(prgname, "user")
 
 	flag.Parse()
 
-	if verboseFlag || dryRun {
+	if versionFlag {
+		fmt.Printf("%s\n", rawversion.RawVersion)
+		return
+	}
+
+	if verboseFlag || dryRunFlag {
 		enableDebug()
 	}
 
-	if noKmsgFlag || dryRun {
+	if noKmsgFlag || dryRunFlag {
 		noKmsg = true
 	}
 
-	if !dryRun && flag.NArg() < 1 {
+	if !dryRunFlag && flag.NArg() < 1 {
 		Logf("Missing output directory argument")
 		os.Exit(1)
 	}
 
 	var outputPath string
 
-	if !dryRun {
+	if !dryRunFlag {
 		outputPath = flag.Arg(0)
 
 		Debugf("Starting quadlet-generator, output to: %s", outputPath)
 	}
 
-	sourcePaths := getUnitDirs(isUser)
+	sourcePaths := getUnitDirs(isUserFlag)
 
 	units := make(map[string]*parser.UnitFile)
 	for _, d := range sourcePaths {
@@ -327,11 +334,13 @@ func main() {
 	}
 
 	if len(units) == 0 {
+		// containers/podman/issues/17374: exit cleanly but log that we
+		// had nothing to do
 		Debugf("No files to parse from %s", sourcePaths)
-		os.Exit(1)
+		os.Exit(0)
 	}
 
-	if !dryRun {
+	if !dryRunFlag {
 		err := os.MkdirAll(outputPath, os.ModePerm)
 		if err != nil {
 			Logf("Can't create dir %s: %s", outputPath, err)
@@ -345,12 +354,12 @@ func main() {
 
 		switch {
 		case strings.HasSuffix(name, ".container"):
-			warnIfAmbigiousName(unit)
-			service, err = quadlet.ConvertContainer(unit, isUser)
+			warnIfAmbiguousName(unit)
+			service, err = quadlet.ConvertContainer(unit, isUserFlag)
 		case strings.HasSuffix(name, ".volume"):
 			service, err = quadlet.ConvertVolume(unit, name)
 		case strings.HasSuffix(name, ".kube"):
-			service, err = quadlet.ConvertKube(unit, isUser)
+			service, err = quadlet.ConvertKube(unit, isUserFlag)
 		case strings.HasSuffix(name, ".network"):
 			service, err = quadlet.ConvertNetwork(unit, name)
 		default:
@@ -363,7 +372,7 @@ func main() {
 		} else {
 			service.Path = path.Join(outputPath, service.Filename)
 
-			if dryRun {
+			if dryRunFlag {
 				data, err := service.ToString()
 				if err != nil {
 					Debugf("Error parsing %s\n---\n", service.Path)
@@ -386,6 +395,7 @@ func main() {
 func init() {
 	flag.BoolVar(&verboseFlag, "v", false, "Print debug information")
 	flag.BoolVar(&noKmsgFlag, "no-kmsg-log", false, "Don't log to kmsg")
-	flag.BoolVar(&isUser, "user", false, "Run as systemd user")
-	flag.BoolVar(&dryRun, "dryrun", false, "run in dryrun mode printing debug information")
+	flag.BoolVar(&isUserFlag, "user", false, "Run as systemd user")
+	flag.BoolVar(&dryRunFlag, "dryrun", false, "Run in dryrun mode printing debug information")
+	flag.BoolVar(&versionFlag, "version", false, "Print version information and exit")
 }

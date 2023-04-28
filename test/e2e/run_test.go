@@ -182,7 +182,7 @@ var _ = Describe("Podman run", func() {
 	It("podman create pod with name in /etc/hosts", func() {
 		name := "test_container"
 		hostname := "test_hostname"
-		session := podmanTest.Podman([]string{"run", "-ti", "--rm", "--name", name, "--hostname", hostname, ALPINE, "cat", "/etc/hosts"})
+		session := podmanTest.Podman([]string{"run", "--rm", "--name", name, "--hostname", hostname, ALPINE, "cat", "/etc/hosts"})
 		session.WaitWithDefaultTimeout()
 		Expect(session).Should(Exit(0))
 		Expect(session.OutputToString()).To(ContainSubstring(name))
@@ -440,28 +440,28 @@ var _ = Describe("Podman run", func() {
 	})
 
 	It("podman run seccomp test", func() {
-		session := podmanTest.Podman([]string{"run", "-it", "--security-opt", strings.Join([]string{"seccomp=", forbidGetCWDSeccompProfile()}, ""), ALPINE, "pwd"})
+		session := podmanTest.Podman([]string{"run", "--security-opt", strings.Join([]string{"seccomp=", forbidGetCWDSeccompProfile()}, ""), ALPINE, "pwd"})
 		session.WaitWithDefaultTimeout()
 		Expect(session).To(ExitWithError())
-		Expect(session.OutputToString()).To(ContainSubstring("Operation not permitted"))
+		Expect(session.ErrorToString()).To(ContainSubstring("Operation not permitted"))
 	})
 
 	It("podman run seccomp test --privileged", func() {
-		session := podmanTest.Podman([]string{"run", "-it", "--privileged", "--security-opt", strings.Join([]string{"seccomp=", forbidGetCWDSeccompProfile()}, ""), ALPINE, "pwd"})
+		session := podmanTest.Podman([]string{"run", "--privileged", "--security-opt", strings.Join([]string{"seccomp=", forbidGetCWDSeccompProfile()}, ""), ALPINE, "pwd"})
 		session.WaitWithDefaultTimeout()
 		Expect(session).To(ExitWithError())
-		Expect(session.OutputToString()).To(ContainSubstring("Operation not permitted"))
+		Expect(session.ErrorToString()).To(ContainSubstring("Operation not permitted"))
 	})
 
 	It("podman run seccomp test --privileged no profile should be unconfined", func() {
-		session := podmanTest.Podman([]string{"run", "-it", "--privileged", ALPINE, "grep", "Seccomp", "/proc/self/status"})
+		session := podmanTest.Podman([]string{"run", "--privileged", ALPINE, "grep", "Seccomp", "/proc/self/status"})
 		session.WaitWithDefaultTimeout()
 		Expect(session.OutputToString()).To(ContainSubstring("0"))
 		Expect(session).Should(Exit(0))
 	})
 
 	It("podman run seccomp test no profile should be default", func() {
-		session := podmanTest.Podman([]string{"run", "-it", ALPINE, "grep", "Seccomp", "/proc/self/status"})
+		session := podmanTest.Podman([]string{"run", ALPINE, "grep", "Seccomp", "/proc/self/status"})
 		session.WaitWithDefaultTimeout()
 		Expect(session.OutputToString()).To(ContainSubstring("2"))
 		Expect(session).Should(Exit(0))
@@ -494,7 +494,7 @@ var _ = Describe("Podman run", func() {
 		session := podmanTest.Podman([]string{"run", "--rm", "--user", "bin", ALPINE, "grep", "CapBnd", "/proc/self/status"})
 		session.WaitWithDefaultTimeout()
 		Expect(session).Should(Exit(0))
-		Expect(session.OutputToString()).To(ContainSubstring("00000000800005fb"))
+		Expect(session.OutputToString()).To(ContainSubstring("00000000800405fb"))
 
 		session = podmanTest.Podman([]string{"run", "--rm", "--user", "bin", ALPINE, "grep", "CapEff", "/proc/self/status"})
 		session.WaitWithDefaultTimeout()
@@ -509,12 +509,12 @@ var _ = Describe("Podman run", func() {
 		session = podmanTest.Podman([]string{"run", "--rm", "--user", "root", ALPINE, "grep", "CapBnd", "/proc/self/status"})
 		session.WaitWithDefaultTimeout()
 		Expect(session).Should(Exit(0))
-		Expect(session.OutputToString()).To(ContainSubstring("00000000800005fb"))
+		Expect(session.OutputToString()).To(ContainSubstring("00000000800405fb"))
 
 		session = podmanTest.Podman([]string{"run", "--rm", "--user", "root", ALPINE, "grep", "CapEff", "/proc/self/status"})
 		session.WaitWithDefaultTimeout()
 		Expect(session).Should(Exit(0))
-		Expect(session.OutputToString()).To(ContainSubstring("00000000800005fb"))
+		Expect(session.OutputToString()).To(ContainSubstring("00000000800405fb"))
 
 		session = podmanTest.Podman([]string{"run", "--rm", "--user", "root", ALPINE, "grep", "CapInh", "/proc/self/status"})
 		session.WaitWithDefaultTimeout()
@@ -524,12 +524,12 @@ var _ = Describe("Podman run", func() {
 		session = podmanTest.Podman([]string{"run", "--rm", ALPINE, "grep", "CapBnd", "/proc/self/status"})
 		session.WaitWithDefaultTimeout()
 		Expect(session).Should(Exit(0))
-		Expect(session.OutputToString()).To(ContainSubstring("00000000800005fb"))
+		Expect(session.OutputToString()).To(ContainSubstring("00000000800405fb"))
 
 		session = podmanTest.Podman([]string{"run", "--rm", ALPINE, "grep", "CapEff", "/proc/self/status"})
 		session.WaitWithDefaultTimeout()
 		Expect(session).Should(Exit(0))
-		Expect(session.OutputToString()).To(ContainSubstring("00000000800005fb"))
+		Expect(session.OutputToString()).To(ContainSubstring("00000000800405fb"))
 
 		session = podmanTest.Podman([]string{"run", "--user=1000:1000", "--cap-add=DAC_OVERRIDE", "--rm", ALPINE, "grep", "CapAmb", "/proc/self/status"})
 		session.WaitWithDefaultTimeout()
@@ -597,7 +597,7 @@ USER bin`, BB)
 		session := podmanTest.Podman([]string{"run", "--rm", "--user", "bin", "test", "grep", "CapBnd", "/proc/self/status"})
 		session.WaitWithDefaultTimeout()
 		Expect(session).Should(Exit(0))
-		Expect(session.OutputToString()).To(ContainSubstring("00000000800005fb"))
+		Expect(session.OutputToString()).To(ContainSubstring("00000000800405fb"))
 
 		session = podmanTest.Podman([]string{"run", "--rm", "--user", "bin", "test", "grep", "CapEff", "/proc/self/status"})
 		session.WaitWithDefaultTimeout()
@@ -1589,7 +1589,7 @@ USER mail`, BB)
 
 	It("podman run --privileged and --group-add", func() {
 		groupName := "mail"
-		session := podmanTest.Podman([]string{"run", "-t", "-i", "--group-add", groupName, "--privileged", fedoraMinimal, "groups"})
+		session := podmanTest.Podman([]string{"run", "--group-add", groupName, "--privileged", fedoraMinimal, "groups"})
 		session.WaitWithDefaultTimeout()
 		Expect(session).Should(Exit(0))
 		Expect(session.OutputToString()).To(ContainSubstring(groupName))
@@ -2052,5 +2052,23 @@ WORKDIR /madethis`, BB)
 		session.WaitWithDefaultTimeout()
 		Expect(session).Should(Exit(0))
 		Expect(session.ErrorToString()).To(ContainSubstring("Trying to pull"))
+	})
+
+	It("podman run --shm-size-systemd", func() {
+		ctrName := "testShmSizeSystemd"
+		run := podmanTest.Podman([]string{"run", "--name", ctrName, "--shm-size-systemd", "10mb", "-d", SYSTEMD_IMAGE, "/sbin/init"})
+		run.WaitWithDefaultTimeout()
+		Expect(run).Should(Exit(0))
+
+		logs := podmanTest.Podman([]string{"logs", ctrName})
+		logs.WaitWithDefaultTimeout()
+		Expect(logs).Should(Exit(0))
+
+		mount := podmanTest.Podman([]string{"exec", ctrName, "mount"})
+		mount.WaitWithDefaultTimeout()
+		Expect(mount).Should(Exit(0))
+		t, strings := mount.GrepString("tmpfs on /run/lock")
+		Expect(t).To(BeTrue())
+		Expect(strings[0]).Should(ContainSubstring("size=10240k"))
 	})
 })

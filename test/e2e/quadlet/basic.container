@@ -4,8 +4,6 @@
 ## assert-podman-args "--rm"
 ## assert-podman-args "--replace"
 ## assert-podman-args "-d"
-## assert-podman-args "--log-driver" "passthrough"
-## assert-podman-args "--runtime" "/usr/bin/crun"
 ## assert-podman-args "--cgroups=split"
 ## assert-podman-args "--sdnotify=conmon"
 ## assert-key-is "Unit" "RequiresMountsFor" "%t/containers"
@@ -14,7 +12,8 @@
 ## assert-key-is "Service" "Type" "notify"
 ## assert-key-is "Service" "NotifyAccess" "all"
 ## assert-key-is "Service" "SyslogIdentifier" "%N"
-## assert-key-is-regex "Service" "ExecStopPost" "-.*/podman rm -f -i --cidfile=%t/%N.cid" "-rm -f %t/%N.cid"
+## assert-key-is-regex "Service" "ExecStopPost" "-.*/podman rm -f -i --cidfile=%t/%N.cid"
+## assert-key-is-regex "Service" "ExecStop" ".*/podman rm -f -i --cidfile=%t/%N.cid"
 ## assert-key-is "Service" "Environment" "PODMAN_SYSTEMD_UNIT=%n"
 
 [Container]

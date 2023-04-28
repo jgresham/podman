@@ -17,7 +17,7 @@ import (
 var (
 	generateOptions     = entities.GenerateKubeOptions{}
 	generateFile        = ""
-	generateDescription = `Command generates Kubernetes Pod, Service or PersistenVolumeClaim YAML (v1 specification) from Podman containers, pods or volumes.
+	generateDescription = `Command generates Kubernetes Pod, Service or PersistentVolumeClaim YAML (v1 specification) from Podman containers, pods or volumes.
 
   Whether the input is for a container or pod, Podman will always generate the specification as a pod.`
 
@@ -51,22 +51,35 @@ func init() {
 		Command: generateKubeCmd,
 		Parent:  generate.GenerateCmd,
 	})
-	generateFlags(generateKubeCmd)
+	generateFlags(generateKubeCmd, registry.PodmanConfig())
 
 	registry.Commands = append(registry.Commands, registry.CliCommand{
 		Command: kubeGenerateCmd,
 		Parent:  kubeCmd,
 	})
-	generateFlags(kubeGenerateCmd)
+	generateFlags(kubeGenerateCmd, registry.PodmanConfig())
 }
 
-func generateFlags(cmd *cobra.Command) {
+func generateFlags(cmd *cobra.Command, podmanConfig *entities.PodmanConfig) {
 	flags := cmd.Flags()
 	flags.BoolVarP(&generateOptions.Service, "service", "s", false, "Generate YAML for a Kubernetes service object")
 
 	filenameFlagName := "filename"
 	flags.StringVarP(&generateFile, filenameFlagName, "f", "", "Write output to the specified path")
 	_ = cmd.RegisterFlagCompletionFunc(filenameFlagName, completion.AutocompleteDefault)
+
+	typeFlagName := "type"
+	// If remote, don't read the client's containers.conf file
+	defaultGenerateType := ""
+	if !registry.IsRemote() {
+		defaultGenerateType = podmanConfig.ContainersConfDefaultsRO.Engine.KubeGenerateType
+	}
+	flags.StringVarP(&generateOptions.Type, typeFlagName, "t", defaultGenerateType, "Generate YAML for the given Kubernetes kind")
+	_ = cmd.RegisterFlagCompletionFunc(typeFlagName, completion.AutocompleteNone)
+
+	replicasFlagName := "replicas"
+	flags.Int32VarP(&generateOptions.Replicas, replicasFlagName, "r", 1, "Set the replicas number for Deployment kind")
+	_ = cmd.RegisterFlagCompletionFunc(replicasFlagName, completion.AutocompleteNone)
 
 	flags.SetNormalizeFunc(utils.AliasFlags)
 }

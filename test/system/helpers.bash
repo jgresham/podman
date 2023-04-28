@@ -2,7 +2,7 @@
 
 # Podman command to run; may be podman-remote
 PODMAN=${PODMAN:-podman}
-QUADLET=${QUADLET:-quadlet}
+QUADLET=${QUADLET:-/usr/libexec/podman/quadlet}
 
 # Standard image to use for most tests
 PODMAN_TEST_IMAGE_REGISTRY=${PODMAN_TEST_IMAGE_REGISTRY:-"quay.io"}
@@ -347,6 +347,10 @@ function is_aarch64() {
     [ "$(uname -m)" == "aarch64" ]
 }
 
+function selinux_enabled() {
+    /usr/sbin/selinuxenabled 2> /dev/null
+}
+
 # Returns the OCI runtime *basename* (typically crun or runc). Much as we'd
 # love to cache this result, we probably shouldn't.
 function podman_runtime() {
@@ -493,6 +497,15 @@ function skip_if_cgroupsv1() {
     fi
 }
 
+#######################
+#  skip_if_cgroupsv2  #  ...with an optional message
+#######################
+function skip_if_cgroupsv2() {
+    if is_cgroupsv2; then
+        skip "${1:-test requires cgroupsv1}"
+    fi
+}
+
 ######################
 #  skip_if_rootless_cgroupsv1  #  ...with an optional message
 ######################
@@ -625,15 +638,33 @@ function assert() {
 
     # This is a multi-line message, which may in turn contain multi-line
     # output, so let's format it ourself to make it more readable.
+    local expect_split
+    mapfile -t expect_split <<<"$expect_string"
     local actual_split
-    IFS=$'\n' read -rd '' -a actual_split <<<"$actual_string" || true
+    mapfile -t actual_split <<<"$actual_string"
+
+    # bash %q is really nice, except for the way it backslashes spaces
+    local -a expect_split_q
+    for line in "${expect_split[@]}"; do
+        local q=$(printf "%q" "$line" | sed -e 's/\\ / /g')
+        expect_split_q+=("$q")
+    done
+    local -a actual_split_q
+    for line in "${actual_split[@]}"; do
+        local q=$(printf "%q" "$line" | sed -e 's/\\ / /g')
+        actual_split_q+=("$q")
+    done
+
     printf "#/vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\n"    >&2
     printf "#|     FAIL: %s\n" "$testname"                        >&2
-    printf "#| expected: %s'%s'\n" "$op" "$expect_string"         >&2
-    printf "#|   actual: %s'%s'\n" "$ws" "${actual_split[0]}"     >&2
+    printf "#| expected: %s%s\n" "$op" "${expect_split_q[0]}"     >&2
     local line
-    for line in "${actual_split[@]:1}"; do
-        printf "#|         > %s'%s'\n" "$ws" "$line"              >&2
+    for line in "${expect_split_q[@]:1}"; do
+        printf "#|         > %s%s\n" "$ws" "$line"                >&2
+    done
+    printf "#|   actual: %s%s\n" "$ws" "${actual_split_q[0]}"     >&2
+    for line in "${actual_split_q[@]:1}"; do
+        printf "#|         > %s%s\n" "$ws" "$line"                >&2
     done
     printf "#\\^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"   >&2
     false

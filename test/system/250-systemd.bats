@@ -189,10 +189,10 @@ function check_listen_env() {
     local stdenv="$1"
     local context="$2"
     if is_remote; then
-	is "$output" "$stdenv" "LISTEN Environment did not pass: $context"
+        is "$output" "$stdenv" "LISTEN Environment did not pass: $context"
     else
-	out=$(for o in $output; do echo $o; done| sort)
-	std=$(echo "$stdenv
+        out=$(for o in $output; do echo $o; done| sort)
+        std=$(echo "$stdenv
 LISTEN_PID=1
 LISTEN_FDS=1
 LISTEN_FDNAMES=listen_fdnames" | sort)
@@ -278,6 +278,13 @@ LISTEN_FDNAMES=listen_fdnames" | sort)
     container_uuid=$output
     run_podman inspect test --format '{{ .ID }}'
     is "${container_uuid}" "${output:0:32}" "UUID should be first 32 chars of Container id"
+}
+
+@test "podman --systemd fails on cgroup v1 with a private cgroupns" {
+    skip_if_cgroupsv2
+
+    run_podman 126 run --systemd=always --cgroupns=private $IMAGE true
+    assert "$output" =~ ".*cgroup namespace is not supported with cgroup v1 and systemd mode"
 }
 
 # https://github.com/containers/podman/issues/13153
@@ -383,11 +390,15 @@ metadata:
 spec:
   containers:
   - command:
-    - top
+    - sh
+    - -c
+    - echo a stdout; echo a stderr 1>&2; sleep inf
     image: $IMAGE
     name: a
   - command:
-    - top
+    - sh
+    - -c
+    - echo b stdout; echo b stderr 1>&2; sleep inf
     image: $IMAGE
     name: b
 EOF
@@ -399,7 +410,7 @@ EOF
 
     # Make sure that Podman is the service's MainPID
     run systemctl show --property=MainPID --value $service_name
-    is "$(</proc/$output/comm)" "podman" "podman is the service mainPID"
+    is "$(</proc/$output/comm)" "conmon" "podman is the service mainPID"
 
     # The name of the service container is predictable: the first 12 characters
     # of the hash of the YAML file followed by the "-service" suffix
@@ -414,11 +425,21 @@ EOF
     run_podman 125 container rm $service_container
     is "$output" "Error: container .* is the service container of pod(s) .* and cannot be removed without removing the pod(s)"
 
-    # Verify that the log-driver for the Pod's containers is passthrough
+    # containers/podman/issues/17482: verify that the log-driver for the Pod's containers is NOT passthrough
     for name in "a" "b"; do
         run_podman container inspect test_pod-${name} --format "{{.HostConfig.LogConfig.Type}}"
-        is $output "passthrough"
+        assert $output != "passthrough"
+        # check that we can get the logs with passthrough when we run in a systemd unit
+        run_podman logs test_pod-$name
+        assert "$output" == "$name stdout
+$name stderr" "logs work with passthrough"
     done
+
+    # we cannot assume the ordering between a b, this depends on timing and would flake in CI
+    # use --names so we do not have to get the ID
+    run_podman pod logs --names test_pod
+    assert "$output" =~ ".*^test_pod-a a stdout.*" "logs from container a shown"
+    assert "$output" =~ ".*^test_pod-b b stdout.*" "logs from container b shown"
 
     # Add a simple `auto-update --dry-run` test here to avoid too much redundancy
     # with 255-auto-update.bats
@@ -433,12 +454,13 @@ EOF
     run_podman pod kill test_pod
     for i in {0..20}; do
         run systemctl is-active $service_name
-        if [[ $output == "inactive" ]]; then
+        if [[ $output == "failed" ]]; then
             break
         fi
         sleep 0.5
     done
-    is "$output" "inactive" "systemd service transitioned to 'inactive' state: $service_name"
+    # The service is marked as failed as the service container exits non-zero.
+    is "$output" "failed" "systemd service transitioned to 'inactive' state: $service_name"
 
     # Now stop and start the service again.
     systemctl stop $service_name

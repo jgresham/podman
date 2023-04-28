@@ -229,7 +229,7 @@ func (s *APIServer) registerImagesHandlers(r *mux.Router) error {
 	//  - in: query
 	//    name: noprune
 	//    type: boolean
-	//    description: not supported. will be logged as an invalid parameter if enabled
+	//    description: do not remove dangling parent images
 	// produces:
 	//  - application/json
 	// responses:
@@ -1013,10 +1013,6 @@ func (s *APIServer) registerImagesHandlers(r *mux.Router) error {
 	//     description: "silences extra stream data on pull"
 	//     type: boolean
 	//     default: false
-	//   - in: query
-	//     name: credentials
-	//     description: "username:password for the registry"
-	//     type: string
 	//   - in: query
 	//     name: Arch
 	//     description: Pull image for the specified architecture.

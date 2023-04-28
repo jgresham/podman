@@ -103,7 +103,8 @@ func TestLibpod(t *testing.T) {
 
 var _ = SynchronizedBeforeSuite(func() []byte {
 	// make cache dir
-	if err := os.MkdirAll(ImageCacheDir, 0777); err != nil {
+	ImageCacheDir = filepath.Join(os.TempDir(), "imagecachedir")
+	if err := os.MkdirAll(ImageCacheDir, 0700); err != nil {
 		fmt.Printf("%q\n", err)
 		os.Exit(1)
 	}
@@ -192,7 +193,7 @@ var _ = SynchronizedAfterSuite(func() {},
 		}
 		// for localized tests, this removes the image cache dir and for remote tests
 		// this is a no-op
-		podmanTest.removeCache(ImageCacheDir)
+		podmanTest.removeCache(podmanTest.ImageCacheDir)
 
 		// LockTmpDir can already be removed
 		os.RemoveAll(LockTmpDir)
@@ -248,6 +249,11 @@ func PodmanTestCreateUtil(tempDir string, remote bool) *PodmanTestIntegration {
 	}
 	os.Setenv("DISABLE_HC_SYSTEMD", "true")
 
+	dbBackend := "boltdb"
+	if os.Getenv("PODMAN_DB") == "sqlite" {
+		dbBackend = "sqlite"
+	}
+
 	networkBackend := CNI
 	networkConfigDir := "/etc/cni/net.d"
 	if isRootless() {
@@ -278,6 +284,9 @@ func PodmanTestCreateUtil(tempDir string, remote bool) *PodmanTestIntegration {
 		storageFs = os.Getenv("STORAGE_FS")
 		storageOptions = "--storage-driver " + storageFs
 	}
+
+	ImageCacheDir = filepath.Join(os.TempDir(), "imagecachedir")
+
 	p := &PodmanTestIntegration{
 		PodmanTest: PodmanTest{
 			PodmanBinary:       podmanBinary,
@@ -287,6 +296,7 @@ func PodmanTestCreateUtil(tempDir string, remote bool) *PodmanTestIntegration {
 			ImageCacheFS:       storageFs,
 			ImageCacheDir:      ImageCacheDir,
 			NetworkBackend:     networkBackend,
+			DatabaseBackend:    dbBackend,
 		},
 		ConmonBinary:        conmonBinary,
 		QuadletBinary:       quadletBinary,
@@ -420,11 +430,11 @@ func GetPortLock(port string) *lockfile.LockFile {
 // collisions during parallel tests
 func GetRandomIPAddress() string {
 	// To avoid IP collisions of initialize random seed for random IP addresses
-	rand.Seed(time.Now().UnixNano())
-	// Add GinkgoParallelNode() on top of the IP address
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	// Add GinkgoParallelProcess() on top of the IP address
 	// in case of the same random seed
-	ip3 := strconv.Itoa(rand.Intn(230) + GinkgoParallelNode())
-	ip4 := strconv.Itoa(rand.Intn(230) + GinkgoParallelNode())
+	ip3 := strconv.Itoa(rng.Intn(230) + GinkgoParallelProcess())
+	ip4 := strconv.Itoa(rng.Intn(230) + GinkgoParallelProcess())
 	return "10.88." + ip3 + "." + ip4
 }
 
@@ -538,8 +548,17 @@ func (p *PodmanTestIntegration) PodmanPID(args []string) (*PodmanSessionIntegrat
 func (p *PodmanTestIntegration) Quadlet(args []string, sourceDir string) *PodmanSessionIntegration {
 	fmt.Printf("Running: %s %s with QUADLET_UNIT_DIRS=%s\n", p.QuadletBinary, strings.Join(args, " "), sourceDir)
 
+	// quadlet uses PODMAN env to get a stable podman path
+	podmanPath, found := os.LookupEnv("PODMAN")
+	if !found {
+		podmanPath = p.PodmanBinary
+	}
+
 	command := exec.Command(p.QuadletBinary, args...)
-	command.Env = []string{fmt.Sprintf("QUADLET_UNIT_DIRS=%s", sourceDir)}
+	command.Env = []string{
+		fmt.Sprintf("QUADLET_UNIT_DIRS=%s", sourceDir),
+		fmt.Sprintf("PODMAN=%s", podmanPath),
+	}
 	session, err := Start(command, GinkgoWriter, GinkgoWriter)
 	if err != nil {
 		Fail("unable to run quadlet command: " + strings.Join(args, " "))
@@ -675,6 +694,13 @@ func checkReason(reason string) {
 	}
 }
 
+func SkipIfRunc(p *PodmanTestIntegration, reason string) {
+	checkReason(reason)
+	if p.OCIRuntime == "runc" {
+		Skip("[runc]: " + reason)
+	}
+}
+
 func SkipIfRootlessCgroupsV1(reason string) {
 	checkReason(reason)
 	if isRootless() && !CGROUPSV2 {
@@ -716,10 +742,44 @@ func SkipIfNotSystemd(manager, reason string) {
 	}
 }
 
+func SkipOnOSVersion(os, version string) {
+	info := GetHostDistributionInfo()
+	if info.Distribution == os && info.Version == version {
+		Skip(fmt.Sprintf("Test doesn't work on %s %s", os, version))
+	}
+}
+
 func SkipIfNotFedora() {
 	info := GetHostDistributionInfo()
 	if info.Distribution != "fedora" {
 		Skip("Test can only run on Fedora")
+	}
+}
+
+type journaldTests struct {
+	journaldSkip bool
+	journaldOnce sync.Once
+}
+
+var journald journaldTests
+
+func SkipIfJournaldUnavailable() {
+	f := func() {
+		journald.journaldSkip = false
+
+		// Check if journalctl is unavailable
+		cmd := exec.Command("journalctl", "-n", "1")
+		if err := cmd.Run(); err != nil {
+			journald.journaldSkip = true
+		}
+	}
+	journald.journaldOnce.Do(f)
+
+	// In container, journalctl does not return an error even if
+	// journald is unavailable
+	SkipIfInContainer("[journald]: journalctl inside a container doesn't work correctly")
+	if journald.journaldSkip {
+		Skip("[journald]: journald is unavailable")
 	}
 }
 
@@ -787,19 +847,14 @@ func SkipIfInContainer(reason string) {
 func SkipIfNotActive(unit string, reason string) {
 	checkReason(reason)
 
-	var buffer bytes.Buffer
 	cmd := exec.Command("systemctl", "is-active", unit)
-	cmd.Stdout = &buffer
-	err := cmd.Start()
-	Expect(err).ToNot(HaveOccurred())
-
-	err = cmd.Wait()
-	Expect(err).ToNot(HaveOccurred())
-
-	Expect(err).ToNot(HaveOccurred())
-	if strings.TrimSpace(buffer.String()) != "active" {
-		Skip(fmt.Sprintf("[systemd]: unit %s is not active: %s", unit, reason))
+	cmd.Stdout = GinkgoWriter
+	cmd.Stderr = GinkgoWriter
+	err := cmd.Run()
+	if cmd.ProcessState.ExitCode() == 0 {
+		return
 	}
+	Skip(fmt.Sprintf("[systemd]: unit %s is not active (%v): %s", unit, err, reason))
 }
 
 func SkipIfCNI(p *PodmanTestIntegration) {
@@ -900,8 +955,8 @@ func (p *PodmanTestIntegration) makeOptions(args []string, noEvents, noCache boo
 		eventsType = "none"
 	}
 
-	podmanOptions := strings.Split(fmt.Sprintf("%s--root %s --runroot %s --runtime %s --conmon %s --network-config-dir %s --network-backend %s --cgroup-manager %s --tmpdir %s --events-backend %s",
-		debug, p.Root, p.RunRoot, p.OCIRuntime, p.ConmonBinary, p.NetworkConfigDir, p.NetworkBackend.ToString(), p.CgroupManager, p.TmpDir, eventsType), " ")
+	podmanOptions := strings.Split(fmt.Sprintf("%s--root %s --runroot %s --runtime %s --conmon %s --network-config-dir %s --network-backend %s --cgroup-manager %s --tmpdir %s --events-backend %s --db-backend %s",
+		debug, p.Root, p.RunRoot, p.OCIRuntime, p.ConmonBinary, p.NetworkConfigDir, p.NetworkBackend.ToString(), p.CgroupManager, p.TmpDir, eventsType, p.DatabaseBackend), " ")
 
 	podmanOptions = append(podmanOptions, strings.Split(p.StorageOptions, " ")...)
 	if !noCache {
@@ -1173,4 +1228,16 @@ func WaitForService(address url.URL) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	Expect(err).ShouldNot(HaveOccurred())
+}
+
+// useCustomNetworkDir makes sure this test uses a custom network dir.
+// This needs to be called for all test they may remove networks from other tests,
+// so netwokr prune, system prune, or system reset.
+// see https://github.com/containers/podman/issues/17946
+func useCustomNetworkDir(podmanTest *PodmanTestIntegration, tempdir string) {
+	// set custom network directory to prevent flakes since the dir is shared with all tests by default
+	podmanTest.NetworkConfigDir = tempdir
+	if IsRemote() {
+		podmanTest.RestartRemoteService()
+	}
 }

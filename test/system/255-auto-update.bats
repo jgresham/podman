@@ -112,7 +112,7 @@ function _confirm_update() {
     local old_iid=$2
 
     # Image has already been pulled, so this shouldn't take too long
-    local timeout=5
+    local timeout=10
     while [[ $timeout -gt 0 ]]; do
         sleep 1
         run_podman '?' inspect --format "{{.Image}}" $cname
@@ -171,7 +171,15 @@ function _confirm_update() {
     is "$output" ".* system auto-update"
 
     since=$(date --iso-8601=seconds)
-    run_podman auto-update --format "{{.Unit}},{{.Image}},{{.Updated}},{{.Policy}}"
+    run_podman '?' auto-update --rollback=false --format "{{.Unit}},{{.Image}},{{.Updated}},{{.Policy}}"
+    if [[ $status -ne 0 ]]; then
+        echo "------------------------------------ SYSTEMCTL STATUS"
+        systemctl status container-$cname.service
+        echo "------------------------------------ JOURNALCAL LOGS"
+        journalctl --unit container-$cname.service
+        echo "------------------------------------"
+        die "auto update failed with exit code $status: $output"
+    fi
     is "$output" "Trying to pull.*" "Image is updated."
     is "$output" ".*container-$cname.service,quay.io/libpod/alpine:latest,true,registry.*" "Image is updated."
     run_podman events --filter type=system --since $since --stream=false
@@ -239,15 +247,24 @@ function _confirm_update() {
 
 @test "podman auto-update - label io.containers.autoupdate=local" {
     generate_service localtest local
+    _wait_service_ready container-$cname.service
+
     image=quay.io/libpod/localtest:latest
     run_podman commit --change CMD=/bin/bash $cname $image
     run_podman image inspect --format "{{.ID}}" $image
 
-    _wait_service_ready container-$cname.service
     run_podman auto-update --dry-run --format "{{.Unit}},{{.Image}},{{.Updated}},{{.Policy}}"
     is "$output" ".*container-$cname.service,quay.io/libpod/localtest:latest,pending,local.*" "Image update is pending."
 
-    run_podman auto-update --format "{{.Unit}},{{.Image}},{{.Updated}},{{.Policy}}"
+    run_podman '?' auto-update --rollback=false --format "{{.Unit}},{{.Image}},{{.Updated}},{{.Policy}}"
+    if [[ $status -ne 0 ]]; then
+        echo "------------------------------------ SYSTEMCTL STATUS"
+        systemctl status container-$cname.service
+        echo "------------------------------------ JOURNALCAL LOGS"
+        journalctl --unit container-$cname.service
+        echo "------------------------------------"
+        die "auto update failed with exit code $status: $output"
+    fi
     is "$output" ".*container-$cname.service,quay.io/libpod/localtest:latest,true,local.*" "Image is updated."
 
     _confirm_update $cname $ori_image
@@ -337,11 +354,13 @@ EOF
         fi
     done
 
-    # Only check that the last service is started. Previous services should already be activated.
-    _wait_service_ready container-$cname.service
+    # Make sure all services are ready.
+    for cname in "${cnames[@]}"; do
+        _wait_service_ready container-$cname.service
+    done
     run_podman commit --change CMD=/bin/bash $local_cname quay.io/libpod/localtest:latest
     # Exit code is expected, due to invalid 'fakevalue'
-    run_podman 125 auto-update
+    run_podman 125 auto-update --rollback=false
     update_log=$output
     is "$update_log" ".*invalid auto-update policy.*" "invalid policy setup"
     is "$update_log" ".*Error: invalid auto-update policy.*" "invalid policy setup"
@@ -350,6 +369,11 @@ EOF
     is "$n_updated" "2" "Number of images updated from registry."
 
     for cname in "${!expect_update[@]}"; do
+        echo "------------------------------------ SYSTEMCTL STATUS"
+        systemctl status container-$cname.service
+        echo "------------------------------------ JOURNALCAL LOGS"
+        journalctl --unit container-$cname.service
+        echo "------------------------------------"
         is "$update_log" ".*$cname.*" "container with auto-update policy image updated"
         # Just because podman says it fetched, doesn't mean it actually updated
         _confirm_update $cname $img_id
@@ -523,6 +547,74 @@ EOF
     systemctl stop $service_name
     run_podman rmi -f $(pause_image) $local_image $newID $oldID
     rm -f $UNIT_DIR/$unit_name
+}
+
+@test "podman auto-update - pod" {
+    dockerfile=$PODMAN_TMPDIR/Dockerfile
+    cat >$dockerfile <<EOF
+FROM $IMAGE
+RUN touch /123
+EOF
+
+    podname=$(random_string)
+    ctrname=$(random_string)
+    podunit="$UNIT_DIR/pod-$podname.service.*"
+    ctrunit="$UNIT_DIR/container-$ctrname.service.*"
+    local_image=localhost/image:$(random_string 10)
+
+    run_podman tag $IMAGE $local_image
+
+    run_podman pod create --name=$podname
+    run_podman create --label "io.containers.autoupdate=local" --pod=$podname --name=$ctrname $local_image top
+
+    # cd into the unit dir to generate the two files.
+    pushd "$UNIT_DIR"
+    run_podman generate systemd --name --new --files $podname
+    is "$output" ".*$podunit.*"
+    is "$output" ".*$ctrunit.*"
+    popd
+
+    systemctl daemon-reload
+
+    run systemctl start pod-$podname.service
+    assert $status -eq 0 "Error starting pod systemd unit: $output"
+    _wait_service_ready container-$ctrname.service
+
+    run_podman pod inspect --format "{{.State}}" $podname
+    is "$output" "Running" "pod is in running state"
+    run_podman container inspect --format "{{.State.Status}}" $ctrname
+    is "$output" "running" "container is in running state"
+
+    run_podman pod inspect --format "{{.ID}}" $podname
+    podid="$output"
+    run_podman container inspect --format "{{.ID}}" $ctrname
+    ctrid="$output"
+
+    # Note that the pod's unit is listed below, not the one of the container.
+    run_podman auto-update --dry-run --format "{{.Unit}},{{.Image}},{{.Updated}},{{.Policy}}"
+    is "$output" ".*pod-$podname.service,$local_image,false,local.*" "No update available"
+
+    run_podman build -t $local_image -f $dockerfile
+
+    run_podman auto-update --dry-run --format "{{.Unit}},{{.Image}},{{.Updated}},{{.Policy}}"
+    is "$output" ".*pod-$podname.service,$local_image,pending,local.*" "Image updated is pending"
+
+    run_podman auto-update --format "{{.Unit}},{{.Image}},{{.Updated}},{{.Policy}}"
+    is "$output" ".*pod-$podname.service,$local_image,true,local.*" "Service has been restarted"
+    _wait_service_ready container-$ctrname.service
+
+    run_podman pod inspect --format "{{.ID}}" $podname
+    assert "$output" != "$podid" "pod has been recreated"
+    run_podman container inspect --format "{{.ID}}" $ctrname
+    assert "$output" != "$ctrid" "container has been recreated"
+
+    run systemctl stop pod-$podname.service
+    assert $status -eq 0 "Error stopping pod systemd unit: $output"
+
+    run_podman pod rm -f $podname
+    run_podman rmi $local_image $(pause_image)
+    rm -f $podunit $ctrunit
+    systemctl daemon-reload
 }
 
 # vim: filetype=sh

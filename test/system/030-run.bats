@@ -347,7 +347,7 @@ echo $rand        |   0 | $rand
 # #6991 : /etc/passwd is modifiable
 @test "podman run : --userns=keep-id: passwd file is modifiable" {
     skip_if_not_rootless "--userns=keep-id only works in rootless mode"
-    run_podman run -d --userns=keep-id --cap-add=dac_override $IMAGE sh -c 'while ! test -e /tmp/stop; do sleep 0.1; done'
+    run_podman run -d --userns=keep-id --cap-add=dac_override $IMAGE top
     cid="$output"
 
     # Assign a UID that is (a) not in our image /etc/passwd and (b) not
@@ -368,8 +368,7 @@ echo $rand        |   0 | $rand
     is "$output" "newuser3:x:$uid:999:$gecos:/home/newuser3:/bin/sh" \
        "newuser3 added to /etc/passwd in container"
 
-    run_podman exec $cid touch /tmp/stop
-    run_podman wait $cid
+    run_podman rm -f -t0 $cid
 }
 
 # For #7754: json-file was equating to 'none'
@@ -639,10 +638,10 @@ json-file | f
         run_podman run --name=$randomname --rootfs $romount:O echo "Hello world"
         is "$output" "Hello world"
 
-	run_podman container inspect $randomname --format "{{.ImageDigest}}"
-	is "$output" "" "Empty image digest for --rootfs container"
+        run_podman container inspect $randomname --format "{{.ImageDigest}}"
+        is "$output" "" "Empty image digest for --rootfs container"
 
-	run_podman rm -f -t0 $randomname
+        run_podman rm -f -t0 $randomname
         run_podman image unmount $IMAGE
     fi
 }
@@ -840,6 +839,24 @@ EOF
     current_oom_score_adj=$(cat /proc/self/oom_score_adj)
     run_podman run --rm $IMAGE cat /proc/self/oom_score_adj
     is "$output" "$current_oom_score_adj" "different oom_score_adj in the container"
+
+    oomscore=$((current_oom_score_adj+1))
+    run_podman run --oom-score-adj=$oomscore --rm $IMAGE cat /proc/self/oom_score_adj
+    is "$output" "$oomscore" "one more then default oomscore"
+
+    skip_if_remote "containersconf needs to be set on server side"
+    oomscore=$((oomscore+1))
+    containersconf=$PODMAN_TMPDIR/containers.conf
+    cat >$containersconf <<EOF
+[containers]
+oom_score_adj=$oomscore
+EOF
+    CONTAINERS_CONF_OVERRIDE=$PODMAN_TMPDIR/containers.conf run_podman run --rm $IMAGE cat /proc/self/oom_score_adj
+    is "$output" "$oomscore" "two more then default oomscore"
+
+    oomscore=$((oomscore+1))
+    CONTAINERS_CONF_OVERRIDE=$PODMAN_TMPDIR/containers.conf run_podman run --oom-score-adj=$oomscore --rm $IMAGE cat /proc/self/oom_score_adj
+    is "$output" "$oomscore" "--oom-score-adj should override containers.conf"
 }
 
 # CVE-2022-1227 : podman top joins container mount NS and uses nsenter from image
@@ -1000,10 +1017,29 @@ $IMAGE--c_ok" \
 read_only=true
 EOF
 
-    CONTAINERS_CONF="$containersconf" run_podman 1 run --rm $IMAGE touch /testro
-    CONTAINERS_CONF="$containersconf" run_podman run --rm --read-only=false $IMAGE touch /testrw
-    CONTAINERS_CONF="$containersconf" run_podman run --rm $IMAGE touch /tmp/testrw
-    CONTAINERS_CONF="$containersconf" run_podman 1 run --rm --read-only-tmpfs=false $IMAGE touch /tmp/testro
+    CONTAINERS_CONF_OVERRIDE="$containersconf" run_podman 1 run --rm $IMAGE touch /testro
+    CONTAINERS_CONF_OVERRIDE="$containersconf" run_podman run --rm --read-only=false $IMAGE touch /testrw
+    CONTAINERS_CONF_OVERRIDE="$containersconf" run_podman run --rm $IMAGE touch /tmp/testrw
+    CONTAINERS_CONF_OVERRIDE="$containersconf" run_podman 1 run --rm --read-only-tmpfs=false $IMAGE touch /tmp/testro
+}
+
+@test "podman run ulimit from containers.conf" {
+    skip_if_remote "containers.conf has to be set on remote, only tested on E2E test"
+    containersconf=$PODMAN_TMPDIR/containers.conf
+    # Safe minimum: anything under 27 barfs w/ "crun: ... Too many open files"
+    nofile1=$((30 + RANDOM % 10000))
+    nofile2=$((30 + RANDOM % 10000))
+    cat >$containersconf <<EOF
+[containers]
+default_ulimits = [
+  "nofile=${nofile1}:${nofile1}",
+]
+EOF
+
+    CONTAINERS_CONF_OVERRIDE="$containersconf" run_podman run --rm $IMAGE grep "Max open files" /proc/self/limits
+    assert "$output" =~ " ${nofile1}  * ${nofile1}  * files"
+    CONTAINERS_CONF_OVERRIDE="$containersconf" run_podman run --ulimit nofile=${nofile2}:${nofile2} --rm $IMAGE grep "Max open files" /proc/self/limits
+    assert "$output" =~ " ${nofile2}  * ${nofile2}  * files"
 }
 
 @test "podman run bad --name" {
@@ -1017,8 +1053,51 @@ EOF
 }
 
 @test "podman run --net=host --cgroupns=host with read only cgroupfs" {
-    # verify that the last /sys/fs/cgroup mount is read-only
-    run_podman run --net=host --cgroupns=host --rm $IMAGE sh -c "grep ' / /sys/fs/cgroup ' /proc/self/mountinfo | tail -n 1 | grep '/sys/fs/cgroup ro'"
+    skip_if_rootless_cgroupsv1
+
+    if is_cgroupsv1; then
+        # verify that the memory controller is mounted read-only
+        run_podman run --net=host --cgroupns=host --rm $IMAGE cat /proc/self/mountinfo
+        assert "$output" =~ "/sys/fs/cgroup/memory ro.* cgroup cgroup"
+    else
+        # verify that the last /sys/fs/cgroup mount is read-only
+        run_podman run --net=host --cgroupns=host --rm $IMAGE sh -c "grep ' / /sys/fs/cgroup ' /proc/self/mountinfo | tail -n 1"
+        assert "$output" =~ "/sys/fs/cgroup ro"
+    fi
 }
+
+@test "podman run - rootfs with idmapped mounts" {
+    skip_if_rootless "idmapped mounts work only with root for now"
+
+    skip_if_remote "userns=auto is set on the server"
+
+    egrep -q "^containers:" /etc/subuid || skip "no IDs allocated for user 'containers'"
+
+    # check if the underlying file system supports idmapped mounts
+    check_dir=$PODMAN_TMPDIR/idmap-check
+    mkdir $check_dir
+    run_podman '?' run --rm --uidmap=0:1000:10000 --rootfs $check_dir:idmap true
+    if [[ "$output" == *"failed to create idmapped mount: invalid argument"* ]]; then
+        skip "idmapped mounts not supported"
+    fi
+
+    run_podman image mount $IMAGE
+    src="$output"
+
+    # we cannot use idmap on top of overlay, so we need a copy
+    romount=$PODMAN_TMPDIR/rootfs
+    cp -ar "$src" "$romount"
+
+    run_podman image unmount $IMAGE
+
+    run_podman run --rm --uidmap=0:1000:10000 --rootfs $romount:idmap stat -c %u:%g /bin
+    is "$output" "0:0"
+
+    run_podman run --uidmap=0:1000:10000 --rm --rootfs "$romount:idmap=uids=0-1001-10000;gids=0-1002-10000" stat -c %u:%g /bin
+    is "$output" "1:2"
+
+    rm -rf $romount
+}
+
 
 # vim: filetype=sh

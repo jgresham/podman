@@ -18,8 +18,8 @@ either 'Containerfile' or 'Dockerfile'.
 The build context directory can be specified as the http(s) URL of an archive,
 git repository or Containerfile.
 
-If no context directory is specified, then Podman will assume the current
-working directory as the build context, which should contain the Containerfile.
+When invoked with `-f` and a path to a Containerfile, with no explicit CONTEXT
+directory, Podman will use the Containerfile's parent directory as its build context.
 
 Containerfiles ending with a ".in" suffix will be preprocessed via CPP(1).  This
 can be useful to decompose Containerfiles into several reusable parts that can
@@ -77,6 +77,25 @@ Specifies a build argument and its value, which will be interpolated in
 instructions read from the Containerfiles in the same way that environment
 variables are, but which will not be added to environment variable list in the
 resulting image's configuration.
+
+#### **--build-arg-file**=*path*
+
+Specifies a file containing lines of build arguments of the form `arg=value`.
+The suggested file name is `argfile.conf`.
+
+Comment lines beginning with `#` are ignored, along with blank lines.
+All others should be of the `arg=value` format passed to `--build-arg`.
+
+If several arguments are provided via the `--build-arg-file`
+and `--build-arg` options, the build arguments will be merged across all
+of the provided files and command line arguments.
+
+Any file provided in a `--build-arg-file` option will be read before
+the arguments supplied via the `--build-arg` option.
+
+When a given argument name is specified several times, the last instance
+is the one that is passed to the resulting builds. This means `--build-arg`
+values always override those in a `--build-arg-file`.
 
 #### **--build-context**=*name=value*
 
@@ -255,7 +274,7 @@ option.
 Specifies a Containerfile which contains instructions for building the image,
 either a local file or an **http** or **https** URL.  If more than one
 Containerfile is specified, *FROM* instructions will only be accepted from the
-first specified file.
+last specified file.
 
 If a build context is not specified, and at least one Containerfile is a
 local file, the directory in which it resides will be used as the build

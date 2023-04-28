@@ -29,25 +29,25 @@ const (
 )
 
 // Convenience function to convert int to ptr
-func intToPtr(i int) *int {
+func IntToPtr(i int) *int {
 	return &i
 }
 
 // Convenience function to convert string to ptr
-func strToPtr(s string) *string {
+func StrToPtr(s string) *string {
 	return &s
 }
 
 // Convenience function to convert bool to ptr
-func boolToPtr(b bool) *bool {
+func BoolToPtr(b bool) *bool {
 	return &b
 }
 
-func getNodeUsr(usrName string) NodeUser {
+func GetNodeUsr(usrName string) NodeUser {
 	return NodeUser{Name: &usrName}
 }
 
-func getNodeGrp(grpName string) NodeGroup {
+func GetNodeGrp(grpName string) NodeGroup {
 	return NodeGroup{Name: &grpName}
 }
 
@@ -57,11 +57,21 @@ type DynamicIgnition struct {
 	TimeZone  string
 	UID       int
 	VMName    string
+	VMType    VMType
 	WritePath string
+	Cfg       Config
 }
 
-// NewIgnitionFile
-func NewIgnitionFile(ign DynamicIgnition) error {
+func (ign *DynamicIgnition) Write() error {
+	b, err := json.Marshal(ign.Cfg)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(ign.WritePath, b, 0644)
+}
+
+// GenerateIgnitionConfig
+func (ign *DynamicIgnition) GenerateIgnitionConfig() error {
 	if len(ign.Name) < 1 {
 		ign.Name = DefaultIgnitionUserName
 	}
@@ -74,7 +84,7 @@ func NewIgnitionFile(ign DynamicIgnition) error {
 				Name:              ign.Name,
 				SSHAuthorizedKeys: []SSHAuthorizedKey{SSHAuthorizedKey(ign.Key)},
 				// Set the UID of the core user inside the machine
-				UID: intToPtr(ign.UID),
+				UID: IntToPtr(ign.UID),
 			},
 			{
 				Name:              "root",
@@ -107,34 +117,19 @@ func NewIgnitionFile(ign DynamicIgnition) error {
 		}
 		tzLink := Link{
 			Node: Node{
-				Group:     getNodeGrp("root"),
+				Group:     GetNodeGrp("root"),
 				Path:      "/etc/localtime",
-				Overwrite: boolToPtr(false),
-				User:      getNodeUsr("root"),
+				Overwrite: BoolToPtr(false),
+				User:      GetNodeUsr("root"),
 			},
 			LinkEmbedded1: LinkEmbedded1{
-				Hard:   boolToPtr(false),
+				Hard:   BoolToPtr(false),
 				Target: filepath.Join("/usr/share/zoneinfo", tz),
 			},
 		}
 		ignStorage.Links = append(ignStorage.Links, tzLink)
 	}
 
-	// ready is a unit file that sets up the virtual serial device
-	// where when the VM is done configuring, it will send an ack
-	// so a listening host knows it can being interacting with it
-	ready := `[Unit]
-Requires=dev-virtio\\x2dports-%s.device
-After=remove-moby.service sshd.socket sshd.service
-OnFailure=emergency.target
-OnFailureJobMode=isolate
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/bin/sh -c '/usr/bin/echo Ready >/dev/%s'
-[Install]
-RequiredBy=default.target
-`
 	deMoby := `[Unit]
 Description=Remove moby-engine
 # Run once for the machine
@@ -187,37 +182,26 @@ ExecStartPost=/usr/bin/systemctl daemon-reload
 [Install]
 WantedBy=sysinit.target
 `
-	_ = ready
 	ignSystemd := Systemd{
 		Units: []Unit{
 			{
-				Enabled: boolToPtr(true),
+				Enabled: BoolToPtr(true),
 				Name:    "podman.socket",
 			},
 			{
-				Enabled:  boolToPtr(true),
-				Name:     "ready.service",
-				Contents: strToPtr(fmt.Sprintf(ready, "vport1p1", "vport1p1")),
-			},
-			{
-				Enabled: boolToPtr(false),
+				Enabled: BoolToPtr(false),
 				Name:    "docker.service",
-				Mask:    boolToPtr(true),
+				Mask:    BoolToPtr(true),
 			},
 			{
-				Enabled: boolToPtr(false),
+				Enabled: BoolToPtr(false),
 				Name:    "docker.socket",
-				Mask:    boolToPtr(true),
+				Mask:    BoolToPtr(true),
 			},
 			{
-				Enabled:  boolToPtr(true),
+				Enabled:  BoolToPtr(true),
 				Name:     "remove-moby.service",
 				Contents: &deMoby,
-			},
-			{
-				Enabled:  boolToPtr(true),
-				Name:     "envset-fwcfg.service",
-				Contents: &envset,
 			},
 		}}
 	ignConfig := Config{
@@ -226,11 +210,18 @@ WantedBy=sysinit.target
 		Storage:  ignStorage,
 		Systemd:  ignSystemd,
 	}
-	b, err := json.Marshal(ignConfig)
-	if err != nil {
-		return err
+
+	// Only qemu has the qemu firmware environment setting
+	if ign.VMType == QemuVirt {
+		qemuUnit := Unit{
+			Enabled:  BoolToPtr(true),
+			Name:     "envset-fwcfg.service",
+			Contents: &envset,
+		}
+		ignSystemd.Units = append(ignSystemd.Units, qemuUnit)
 	}
-	return os.WriteFile(ign.WritePath, b, 0644)
+	ign.Cfg = ignConfig
+	return nil
 }
 
 func getDirs(usrName string) []Directory {
@@ -249,11 +240,11 @@ func getDirs(usrName string) []Directory {
 	for i, d := range newDirs {
 		newDir := Directory{
 			Node: Node{
-				Group: getNodeGrp(usrName),
+				Group: GetNodeGrp(usrName),
 				Path:  d,
-				User:  getNodeUsr(usrName),
+				User:  GetNodeUsr(usrName),
 			},
-			DirectoryEmbedded1: DirectoryEmbedded1{Mode: intToPtr(0755)},
+			DirectoryEmbedded1: DirectoryEmbedded1{Mode: IntToPtr(0755)},
 		}
 		dirs[i] = newDir
 	}
@@ -265,11 +256,11 @@ func getDirs(usrName string) []Directory {
 	// as a workaround.
 	dirs = append(dirs, Directory{
 		Node: Node{
-			Group: getNodeGrp("root"),
+			Group: GetNodeGrp("root"),
 			Path:  "/etc/containers/registries.conf.d",
-			User:  getNodeUsr("root"),
+			User:  GetNodeUsr("root"),
 		},
-		DirectoryEmbedded1: DirectoryEmbedded1{Mode: intToPtr(0755)},
+		DirectoryEmbedded1: DirectoryEmbedded1{Mode: IntToPtr(0755)},
 	})
 
 	// The directory is used by envset-fwcfg.service
@@ -277,18 +268,18 @@ func getDirs(usrName string) []Directory {
 	// from a host
 	dirs = append(dirs, Directory{
 		Node: Node{
-			Group: getNodeGrp("root"),
+			Group: GetNodeGrp("root"),
 			Path:  "/etc/systemd/system.conf.d",
-			User:  getNodeUsr("root"),
+			User:  GetNodeUsr("root"),
 		},
-		DirectoryEmbedded1: DirectoryEmbedded1{Mode: intToPtr(0755)},
+		DirectoryEmbedded1: DirectoryEmbedded1{Mode: IntToPtr(0755)},
 	}, Directory{
 		Node: Node{
-			Group: getNodeGrp("root"),
+			Group: GetNodeGrp("root"),
 			Path:  "/etc/environment.d",
-			User:  getNodeUsr("root"),
+			User:  GetNodeUsr("root"),
 		},
-		DirectoryEmbedded1: DirectoryEmbedded1{Mode: intToPtr(0755)},
+		DirectoryEmbedded1: DirectoryEmbedded1{Mode: IntToPtr(0755)},
 	})
 
 	return dirs
@@ -321,16 +312,16 @@ Delegate=memory pids cpu io
 	// Add a fake systemd service to get the user socket rolling
 	files = append(files, File{
 		Node: Node{
-			Group: getNodeGrp(usrName),
+			Group: GetNodeGrp(usrName),
 			Path:  "/home/" + usrName + "/.config/systemd/user/linger-example.service",
-			User:  getNodeUsr(usrName),
+			User:  GetNodeUsr(usrName),
 		},
 		FileEmbedded1: FileEmbedded1{
 			Append: nil,
 			Contents: Resource{
-				Source: encodeDataURLPtr(lingerExample),
+				Source: EncodeDataURLPtr(lingerExample),
 			},
-			Mode: intToPtr(0744),
+			Mode: IntToPtr(0744),
 		},
 	})
 
@@ -338,16 +329,16 @@ Delegate=memory pids cpu io
 	// by default
 	files = append(files, File{
 		Node: Node{
-			Group: getNodeGrp(usrName),
+			Group: GetNodeGrp(usrName),
 			Path:  "/home/" + usrName + "/.config/containers/containers.conf",
-			User:  getNodeUsr(usrName),
+			User:  GetNodeUsr(usrName),
 		},
 		FileEmbedded1: FileEmbedded1{
 			Append: nil,
 			Contents: Resource{
-				Source: encodeDataURLPtr(containers),
+				Source: EncodeDataURLPtr(containers),
 			},
-			Mode: intToPtr(0744),
+			Mode: IntToPtr(0744),
 		},
 	})
 
@@ -355,17 +346,17 @@ Delegate=memory pids cpu io
 	for _, sub := range []string{"/etc/subuid", "/etc/subgid"} {
 		files = append(files, File{
 			Node: Node{
-				Group:     getNodeGrp("root"),
+				Group:     GetNodeGrp("root"),
 				Path:      sub,
-				User:      getNodeUsr("root"),
-				Overwrite: boolToPtr(true),
+				User:      GetNodeUsr("root"),
+				Overwrite: BoolToPtr(true),
 			},
 			FileEmbedded1: FileEmbedded1{
 				Append: nil,
 				Contents: Resource{
-					Source: encodeDataURLPtr(fmt.Sprintf(subUID, usrName)),
+					Source: EncodeDataURLPtr(fmt.Sprintf(subUID, usrName)),
 				},
-				Mode: intToPtr(0744),
+				Mode: IntToPtr(0744),
 			},
 		})
 	}
@@ -374,58 +365,59 @@ Delegate=memory pids cpu io
 	// by default
 	files = append(files, File{
 		Node: Node{
-			Group: getNodeGrp("root"),
+			Group: GetNodeGrp("root"),
 			Path:  "/etc/systemd/system/user@.service.d/delegate.conf",
-			User:  getNodeUsr("root"),
+			User:  GetNodeUsr("root"),
 		},
 		FileEmbedded1: FileEmbedded1{
 			Append: nil,
 			Contents: Resource{
-				Source: encodeDataURLPtr(delegateConf),
+				Source: EncodeDataURLPtr(delegateConf),
 			},
-			Mode: intToPtr(0644),
+			Mode: IntToPtr(0644),
 		},
 	})
 
 	// Add a file into linger
 	files = append(files, File{
 		Node: Node{
-			Group: getNodeGrp(usrName),
+			Group: GetNodeGrp(usrName),
 			Path:  "/var/lib/systemd/linger/core",
-			User:  getNodeUsr(usrName),
+			User:  GetNodeUsr(usrName),
 		},
-		FileEmbedded1: FileEmbedded1{Mode: intToPtr(0644)},
+		FileEmbedded1: FileEmbedded1{Mode: IntToPtr(0644)},
 	})
 
 	// Set deprecated machine_enabled to true to indicate we're in a VM
 	files = append(files, File{
 		Node: Node{
-			Group: getNodeGrp("root"),
+			Group: GetNodeGrp("root"),
 			Path:  "/etc/containers/containers.conf",
-			User:  getNodeUsr("root"),
+			User:  GetNodeUsr("root"),
 		},
 		FileEmbedded1: FileEmbedded1{
 			Append: nil,
 			Contents: Resource{
-				Source: encodeDataURLPtr(rootContainers),
+				Source: EncodeDataURLPtr(rootContainers),
 			},
-			Mode: intToPtr(0644),
+			Mode: IntToPtr(0644),
 		},
 	})
 
 	// Set machine marker file to indicate podman is in a qemu based machine
 	files = append(files, File{
 		Node: Node{
-			Group: getNodeGrp("root"),
+			Group: GetNodeGrp("root"),
 			Path:  "/etc/containers/podman-machine",
-			User:  getNodeUsr("root"),
+			User:  GetNodeUsr("root"),
 		},
 		FileEmbedded1: FileEmbedded1{
 			Append: nil,
 			Contents: Resource{
-				Source: encodeDataURLPtr("qemu\n"),
+				// TODO this should be fixed for all vmtypes
+				Source: EncodeDataURLPtr("qemu\n"),
 			},
-			Mode: intToPtr(0644),
+			Mode: IntToPtr(0644),
 		},
 	})
 
@@ -436,16 +428,16 @@ Delegate=memory pids cpu io
 	// as a workaround.
 	files = append(files, File{
 		Node: Node{
-			Group: getNodeGrp("root"),
+			Group: GetNodeGrp("root"),
 			Path:  "/etc/containers/registries.conf.d/999-podman-machine.conf",
-			User:  getNodeUsr("root"),
+			User:  GetNodeUsr("root"),
 		},
 		FileEmbedded1: FileEmbedded1{
 			Append: nil,
 			Contents: Resource{
-				Source: encodeDataURLPtr("unqualified-search-registries=[\"docker.io\"]\n"),
+				Source: EncodeDataURLPtr("unqualified-search-registries=[\"docker.io\"]\n"),
 			},
-			Mode: intToPtr(0644),
+			Mode: IntToPtr(0644),
 		},
 	})
 
@@ -458,9 +450,9 @@ Delegate=memory pids cpu io
 			// Create a symlink from the docker socket to the podman socket.
 			// Taken from https://github.com/containers/podman/blob/main/contrib/systemd/system/podman-docker.conf
 			Contents: Resource{
-				Source: encodeDataURLPtr("L+  /run/docker.sock   -    -    -     -   /run/podman/podman.sock\n"),
+				Source: EncodeDataURLPtr("L+  /run/docker.sock   -    -    -     -   /run/podman/podman.sock\n"),
 			},
-			Mode: intToPtr(0644),
+			Mode: IntToPtr(0644),
 		},
 	})
 
@@ -469,16 +461,16 @@ Delegate=memory pids cpu io
 
 	files = append(files, File{
 		Node: Node{
-			Group: getNodeGrp("root"),
+			Group: GetNodeGrp("root"),
 			Path:  "/etc/profile.d/docker-host.sh",
-			User:  getNodeUsr("root"),
+			User:  GetNodeUsr("root"),
 		},
 		FileEmbedded1: FileEmbedded1{
 			Append: nil,
 			Contents: Resource{
-				Source: encodeDataURLPtr(setDockerHost),
+				Source: EncodeDataURLPtr(setDockerHost),
 			},
-			Mode: intToPtr(0644),
+			Mode: IntToPtr(0644),
 		},
 	})
 
@@ -512,6 +504,34 @@ Delegate=memory pids cpu io
 			logrus.Warnf("Invalid path in SSL_CERT_DIR: %q", err)
 		}
 	}
+
+	files = append(files, File{
+		Node: Node{
+			User:  GetNodeUsr("root"),
+			Group: GetNodeGrp("root"),
+			Path:  "/etc/chrony.conf",
+		},
+		FileEmbedded1: FileEmbedded1{
+			Append: []Resource{{
+				Source: EncodeDataURLPtr("\nconfdir /etc/chrony.d\n"),
+			}},
+		},
+	})
+
+	// Issue #11541: allow Chrony to update the system time when it has drifted
+	// far from NTP time.
+	files = append(files, File{
+		Node: Node{
+			User:  GetNodeUsr("root"),
+			Group: GetNodeGrp("root"),
+			Path:  "/etc/chrony.d/50-podman-makestep.conf",
+		},
+		FileEmbedded1: FileEmbedded1{
+			Contents: Resource{
+				Source: EncodeDataURLPtr("makestep 1 -1\n"),
+			},
+		},
+	})
 
 	return files
 }
@@ -567,16 +587,16 @@ func prepareCertFile(path string, name string) (File, error) {
 
 	file := File{
 		Node: Node{
-			Group: getNodeGrp("root"),
+			Group: GetNodeGrp("root"),
 			Path:  targetPath,
-			User:  getNodeUsr("root"),
+			User:  GetNodeUsr("root"),
 		},
 		FileEmbedded1: FileEmbedded1{
 			Append: nil,
 			Contents: Resource{
-				Source: encodeDataURLPtr(string(b)),
+				Source: EncodeDataURLPtr(string(b)),
 			},
-			Mode: intToPtr(0644),
+			Mode: IntToPtr(0644),
 		},
 	}
 	return file, nil
@@ -595,28 +615,28 @@ func GetProxyVariables() map[string]string {
 func getLinks(usrName string) []Link {
 	return []Link{{
 		Node: Node{
-			Group: getNodeGrp(usrName),
+			Group: GetNodeGrp(usrName),
 			Path:  "/home/" + usrName + "/.config/systemd/user/default.target.wants/linger-example.service",
-			User:  getNodeUsr(usrName),
+			User:  GetNodeUsr(usrName),
 		},
 		LinkEmbedded1: LinkEmbedded1{
-			Hard:   boolToPtr(false),
+			Hard:   BoolToPtr(false),
 			Target: "/home/" + usrName + "/.config/systemd/user/linger-example.service",
 		},
 	}, {
 		Node: Node{
-			Group:     getNodeGrp("root"),
+			Group:     GetNodeGrp("root"),
 			Path:      "/usr/local/bin/docker",
-			Overwrite: boolToPtr(true),
-			User:      getNodeUsr("root"),
+			Overwrite: BoolToPtr(true),
+			User:      GetNodeUsr("root"),
 		},
 		LinkEmbedded1: LinkEmbedded1{
-			Hard:   boolToPtr(false),
+			Hard:   BoolToPtr(false),
 			Target: "/usr/bin/podman",
 		},
 	}}
 }
 
-func encodeDataURLPtr(contents string) *string {
-	return strToPtr(fmt.Sprintf("data:,%s", url.PathEscape(contents)))
+func EncodeDataURLPtr(contents string) *string {
+	return StrToPtr(fmt.Sprintf("data:,%s", url.PathEscape(contents)))
 }

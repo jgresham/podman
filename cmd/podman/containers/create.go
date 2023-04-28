@@ -196,6 +196,23 @@ func replaceContainer(name string) error {
 	return removeContainers([]string{name}, rmOptions, false)
 }
 
+func createOrUpdateFlags(cmd *cobra.Command, vals *entities.ContainerCreateOptions) error {
+	if cmd.Flags().Changed("pids-limit") {
+		val := cmd.Flag("pids-limit").Value.String()
+		// Convert -1 to 0, so that -1 maps to unlimited pids limit
+		if val == "-1" {
+			val = "0"
+		}
+		pidsLimit, err := strconv.ParseInt(val, 10, 32)
+		if err != nil {
+			return err
+		}
+		vals.PIDsLimit = &pidsLimit
+	}
+
+	return nil
+}
+
 func CreateInit(c *cobra.Command, vals entities.ContainerCreateOptions, isInfra bool) (entities.ContainerCreateOptions, error) {
 	if len(vals.UIDMap) > 0 || len(vals.GIDMap) > 0 || vals.SubUIDName != "" || vals.SubGIDName != "" {
 		if c.Flag("userns").Changed {
@@ -240,7 +257,7 @@ func CreateInit(c *cobra.Command, vals entities.ContainerCreateOptions, isInfra 
 					if registry.IsRemote() {
 						return vals, errors.New("the '--group-add keep-groups' option is not supported in remote mode")
 					}
-					vals.Annotation = append(vals.Annotation, "run.oci.keep_original_groups=1")
+					vals.Annotation = append(vals.Annotation, fmt.Sprintf("%s=1", define.RunOCIKeepOriginalGroups))
 				} else {
 					groups = append(groups, g)
 				}
@@ -255,18 +272,11 @@ func CreateInit(c *cobra.Command, vals entities.ContainerCreateOptions, isInfra 
 			}
 			vals.OOMScoreAdj = &val
 		}
-		if c.Flags().Changed("pids-limit") {
-			val := c.Flag("pids-limit").Value.String()
-			// Convert -1 to 0, so that -1 maps to unlimited pids limit
-			if val == "-1" {
-				val = "0"
-			}
-			pidsLimit, err := strconv.ParseInt(val, 10, 32)
-			if err != nil {
-				return vals, err
-			}
-			vals.PIDsLimit = &pidsLimit
+
+		if err := createOrUpdateFlags(c, &vals); err != nil {
+			return vals, err
 		}
+
 		if c.Flags().Changed("env") {
 			env, err := c.Flags().GetStringArray("env")
 			if err != nil {
@@ -284,6 +294,9 @@ func CreateInit(c *cobra.Command, vals entities.ContainerCreateOptions, isInfra 
 	}
 	if c.Flag("shm-size").Changed {
 		vals.ShmSize = c.Flag("shm-size").Value.String()
+	}
+	if c.Flag("shm-size-systemd").Changed {
+		vals.ShmSizeSystemd = c.Flag("shm-size-systemd").Value.String()
 	}
 	if (c.Flag("dns").Changed || c.Flag("dns-option").Changed || c.Flag("dns-search").Changed) && vals.Net != nil && (vals.Net.Network.NSMode == specgen.NoNetwork || vals.Net.Network.IsContainer()) {
 		return vals, fmt.Errorf("conflicting options: dns and the network mode: " + string(vals.Net.Network.NSMode))

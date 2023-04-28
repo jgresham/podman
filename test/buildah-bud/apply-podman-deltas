@@ -89,6 +89,10 @@ function skip_if_remote() {
     _skip "skip_if_remote" "$@"
 }
 
+function skip_if_rootless_remote() {
+    _skip "skip_if_rootless_remote" "$@"
+}
+
 # END   handlers
 ###############################################################################
 # BEGIN user-customizable section
@@ -245,9 +249,27 @@ skip_if_remote "Explicit request in buildah PR 4190 to skip this on remote" \
 # BEGIN tests which are skipped due to actual podman or podman-remote bugs.
 
 skip_if_remote "different error messages between podman & podman-remote" \
-               "bud with .dockerignore #2"
+               "bud with .dockerignore #2" \
+               "bud with .dockerignore #4"
 
 # END   tests which are skipped due to actual podman or podman-remote bugs.
+###############################################################################
+# BEGIN temporary workarounds that must be reevaluated periodically
+
+skip_if_remote "FIXME: can this test be made to work under podman-remote?" \
+               "bud-with-mount-cache-like-buildkit-verify-default-selinux-option"
+
+skip_if_rootless_remote "FIXME: #17788 tar + namespaces over http" \
+                        "bud-http-context-with-Dockerfile" \
+                        "bud-http-context-dir-with-Dockerfile" \
+                        "bud-http-context-with-Containerfile"
+
+skip_if_rootless_remote "FIXME: not sure if 17788 or some other bug" \
+                        "bud-github-context" \
+                        "bud with Dockerfile from stdin tar" \
+                        "build-with-network-test"
+
+# END   temporary workarounds that must be reevaluated periodically
 ###############################################################################
 
 exit $RC

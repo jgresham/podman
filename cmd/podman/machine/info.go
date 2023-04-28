@@ -17,8 +17,8 @@ import (
 	"github.com/containers/podman/v4/libpod/define"
 	"github.com/containers/podman/v4/pkg/domain/entities"
 	"github.com/containers/podman/v4/pkg/machine"
-	"github.com/ghodss/yaml"
 	"github.com/spf13/cobra"
+	"sigs.k8s.io/yaml"
 )
 
 var infoDescription = `Display information pertaining to the machine host.`
@@ -141,15 +141,15 @@ func hostInfo() (*entities.MachineHostInfo, error) {
 		}
 	}
 
-	host.VMType = provider.VMType()
+	host.VMType = provider.VMType().String()
 
-	dataDir, err := machine.GetDataDir(host.VMType)
+	dataDir, err := machine.GetDataDir(provider.VMType())
 	if err != nil {
 		return nil, fmt.Errorf("failed to get machine image dir")
 	}
 	host.MachineImageDir = dataDir
 
-	confDir, err := machine.GetConfDir(host.VMType)
+	confDir, err := machine.GetConfDir(provider.VMType())
 	if err != nil {
 		return nil, fmt.Errorf("failed to get machine config dir %w", err)
 	}

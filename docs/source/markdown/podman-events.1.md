@@ -77,6 +77,9 @@ The *volume* type will report the following statuses:
  * prune
  * remove
 
+#### Verbose Create Events
+
+Setting `events_container_create_inspect_data=true` in containers.conf(5) instructs Podman to create more verbose container-create events which include a JSON payload with detailed information about the containers.  The JSON payload is identical to the one of podman-container-inspect(1).  The associated field in journald is named `PODMAN_CONTAINER_INSPECT_DATA`.
 
 ## OPTIONS
 
@@ -98,19 +101,20 @@ In the case where an ID is used, the ID may be in its full or shortened form.  T
 
 Format the output to JSON Lines or using the given Go template.
 
-| **Placeholder**    | **Description**                               |
-|--------------------|-----------------------------------------------|
-| .Attributes        | created_at, _by, labels, and more (map[])     |
-| .ContainerExitCode | Exit code (int)                               |
-| .Details ...       | Internal structure, not actually useful       |
-| .HealthStatus      | Health Status (string)                        |
-| .ID                | Container ID (full 64-bit SHA)                |
-| .Image             | Name of image being run (string)              |
-| .Name              | Container name (string)                       |
-| .Network           | Name of network being used (string)           |
-| .Status            | Event status (e.g., create, start, died, ...) |
-| .Time              | Event timestamp (string)                      |
-| .Type              | Event type (e.g., image, container, pod, ...) |
+| **Placeholder**       | **Description**                               |
+|-----------------------|-----------------------------------------------|
+| .Attributes           | created_at, _by, labels, and more (map[])     |
+| .ContainerExitCode    | Exit code (int)                               |
+| .ContainerInspectData | Payload of the container's inspect            |
+| .HealthStatus         | Health Status (string)                        |
+| .ID                   | Container ID (full 64-bit SHA)                |
+| .Image                | Name of image being run (string)              |
+| .Name                 | Container name (string)                       |
+| .Network              | Name of network being used (string)           |
+| .PodID                | ID of pod associated with container, if any   |
+| .Status               | Event status (e.g., create, start, died, ...) |
+| .Time                 | Event timestamp (string)                      |
+| .Type                 | Event type (e.g., image, container, pod, ...) |
 
 #### **--help**
 
@@ -124,6 +128,9 @@ Do not truncate the output (default *true*).
 
 Show all events created since the given timestamp
 
+#### **--stream**
+
+Stream events and do not exit after reading the last known event (default *true*).
 
 #### **--until**=*timestamp*
 
@@ -131,6 +138,25 @@ Show all events created until the given timestamp
 
 The *since* and *until* values can be RFC3339Nano time stamps or a Go duration string such as 10m, 5h. If no
 *since* or *until* values are provided, only new events will be shown.
+
+## JOURNALD IDENTIFIERS
+
+The journald events-backend of Podman uses the following journald identifiers.  You can use the identifiers to filter Podman events directly with `journalctl`.
+
+| **Identifier**                | **Description**                                         |
+|-------------------------------|---------------------------------------------------------|
+| SYSLOG_IDENTIFIER             | Always set to "podman"                                  |
+| PODMAN_EVENT                  | The event status as described above                     |
+| PODMAN_TYPE                   | The event type as described above                       |
+| PODMAN_TIME                   | The time stamp when the event was written               |
+| PODMAN_NAME                   | Name of the event object (e.g., container, image)       |
+| PODMAN_ID                     | ID of the event object (e.g., container, image)         |
+| PODMAN_EXIT_CODE              | Exit code of the container                              |
+| PODMAN_POD_ID                 | Pod ID of the container                                 |
+| PODMAN_LABELS                 | Labels of the container                                 |
+| PODMAN_HEALTH_STATUS          | Health status of the container                          |
+| PODMAN_CONTAINER_INSPECT_DATA | The JSON payload of `podman-inspect` as described above |
+| PODMAN_NETWORK_NAME           | The name of the network                                 |
 
 ## EXAMPLES
 
@@ -148,7 +174,7 @@ Show only Podman create events
 ```
 $ podman events -f event=create
 2019-03-02 10:36:01.375685062 -0600 CST container create 20dc581f6fbf (image=docker.io/library/alpine:latest, name=sharp_morse)
-2019-03-02 10:36:08.561188337 -0600 CST container create 58e7e002344c (image=k8s.gcr.io/pause:3.1, name=3e701f270d54-infra)
+2019-03-02 10:36:08.561188337 -0600 CST container create 58e7e002344c (image=registry.k8s.io/pause:3.1, name=3e701f270d54-infra)
 2019-03-02 10:36:13.146899437 -0600 CST volume create cad6dc50e087 (image=, name=cad6dc50e0879568e7d656bd004bd343d6035e7fc4024e1711506fe2fd459e6f)
 2019-03-02 10:36:29.978806894 -0600 CST container create d81e30f1310f (image=docker.io/library/busybox:latest, name=musing_newton)
 ```
@@ -164,9 +190,9 @@ $ podman events --filter event=create --filter type=pod
 Show only Podman events created in the last five minutes:
 ```
 $ sudo podman events --since 5m
-2019-03-02 10:44:29.598835409 -0600 CST container create b629d10d3831 (image=k8s.gcr.io/pause:3.1, name=1df5ebca7b44-infra)
+2019-03-02 10:44:29.598835409 -0600 CST container create b629d10d3831 (image=registry.k8s.io/pause:3.1, name=1df5ebca7b44-infra)
 2019-03-02 10:44:29.601746633 -0600 CST pod create 1df5ebca7b44 (image=, name=confident_hawking)
-2019-03-02 10:44:42.371100253 -0600 CST container create 170a0f457d00 (image=k8s.gcr.io/pause:3.1, name=ca731231718e-infra)
+2019-03-02 10:44:42.371100253 -0600 CST container create 170a0f457d00 (image=registry.k8s.io/pause:3.1, name=ca731231718e-infra)
 2019-03-02 10:44:42.374637304 -0600 CST pod create ca731231718e (image=, name=webapp)
 ```
 

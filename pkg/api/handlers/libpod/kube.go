@@ -19,16 +19,18 @@ func KubePlay(w http.ResponseWriter, r *http.Request) {
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
 	decoder := r.Context().Value(api.DecoderKey).(*schema.Decoder)
 	query := struct {
-		Annotations  map[string]string `schema:"annotations"`
-		Network      []string          `schema:"network"`
-		TLSVerify    bool              `schema:"tlsVerify"`
-		LogDriver    string            `schema:"logDriver"`
-		LogOptions   []string          `schema:"logOptions"`
-		Start        bool              `schema:"start"`
-		StaticIPs    []string          `schema:"staticIPs"`
-		StaticMACs   []string          `schema:"staticMACs"`
-		NoHosts      bool              `schema:"noHosts"`
-		PublishPorts []string          `schema:"publishPorts"`
+		Annotations      map[string]string `schema:"annotations"`
+		Network          []string          `schema:"network"`
+		TLSVerify        bool              `schema:"tlsVerify"`
+		LogDriver        string            `schema:"logDriver"`
+		LogOptions       []string          `schema:"logOptions"`
+		Start            bool              `schema:"start"`
+		StaticIPs        []string          `schema:"staticIPs"`
+		StaticMACs       []string          `schema:"staticMACs"`
+		NoHosts          bool              `schema:"noHosts"`
+		PublishPorts     []string          `schema:"publishPorts"`
+		Wait             bool              `schema:"wait"`
+		ServiceContainer bool              `schema:"serviceContainer"`
 	}{
 		TLSVerify: true,
 		Start:     true,
@@ -83,19 +85,21 @@ func KubePlay(w http.ResponseWriter, r *http.Request) {
 
 	containerEngine := abi.ContainerEngine{Libpod: runtime}
 	options := entities.PlayKubeOptions{
-		Annotations:  query.Annotations,
-		Authfile:     authfile,
-		Username:     username,
-		Password:     password,
-		Networks:     query.Network,
-		NoHosts:      query.NoHosts,
-		Quiet:        true,
-		LogDriver:    logDriver,
-		LogOptions:   query.LogOptions,
-		StaticIPs:    staticIPs,
-		StaticMACs:   staticMACs,
-		IsRemote:     true,
-		PublishPorts: query.PublishPorts,
+		Annotations:      query.Annotations,
+		Authfile:         authfile,
+		Username:         username,
+		Password:         password,
+		Networks:         query.Network,
+		NoHosts:          query.NoHosts,
+		Quiet:            true,
+		LogDriver:        logDriver,
+		LogOptions:       query.LogOptions,
+		StaticIPs:        staticIPs,
+		StaticMACs:       staticMACs,
+		IsRemote:         true,
+		PublishPorts:     query.PublishPorts,
+		Wait:             query.Wait,
+		ServiceContainer: query.ServiceContainer,
 	}
 	if _, found := r.URL.Query()["tlsVerify"]; found {
 		options.SkipTLSVerify = types.NewOptionalBool(!query.TLSVerify)
@@ -104,7 +108,6 @@ func KubePlay(w http.ResponseWriter, r *http.Request) {
 		options.Start = types.NewOptionalBool(query.Start)
 	}
 	report, err := containerEngine.PlayKube(r.Context(), r.Body, options)
-	_ = r.Body.Close()
 	if err != nil {
 		utils.Error(w, http.StatusInternalServerError, fmt.Errorf("playing YAML file: %w", err))
 		return
@@ -128,7 +131,6 @@ func KubePlayDown(w http.ResponseWriter, r *http.Request) {
 
 	containerEngine := abi.ContainerEngine{Libpod: runtime}
 	report, err := containerEngine.PlayKubeDown(r.Context(), r.Body, entities.PlayKubeDownOptions{Force: query.Force})
-	_ = r.Body.Close()
 	if err != nil {
 		utils.Error(w, http.StatusInternalServerError, fmt.Errorf("tearing down YAML file: %w", err))
 		return

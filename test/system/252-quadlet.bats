@@ -15,6 +15,10 @@ function start_time() {
 
 function setup() {
     skip_if_remote "quadlet tests are meaningless over remote"
+    skip_if_rootless_cgroupsv1 "Can't use --cgroups=split w/ CGv1 (#17456)"
+    skip_if_journald_unavailable "quadlet isn't really usable without journal"
+
+    test -x "$QUADLET" || die "Cannot run quadlet tests without executable \$QUADLET ($QUADLET)"
 
     start_time
 
@@ -47,7 +51,9 @@ function run_quadlet() {
     local quadlet_tmpdir=$(mktemp -d --tmpdir=$PODMAN_TMPDIR quadlet.XXXXXX)
     cp $sourcefile $quadlet_tmpdir/
 
+    echo "$_LOG_PROMPT $QUADLET $_DASHUSER $UNIT_DIR"
     QUADLET_UNIT_DIRS="$quadlet_tmpdir" run $QUADLET $_DASHUSER $UNIT_DIR
+    echo "$output"
     assert $status -eq 0 "Failed to convert quadlet file: $sourcefile"
     is "$output" "" "quadlet should report no errors"
 
@@ -78,14 +84,20 @@ function service_setup() {
         local activestate="inactive"
     fi
 
+    echo "$_LOG_PROMPT systemctl $startargs start $service"
     run systemctl $startargs start "$service"
-    assert $status -eq 0 "Error starting systemd unit $service: $output"
+    echo "$output"
+    assert $status -eq 0 "Error starting systemd unit $service"
 
+    echo "$_LOG_PROMPT systemctl status $service"
     run systemctl status "$service"
-    assert $status -eq $statusexit "systemctl status $service: $output"
+    echo "$output"
+    assert $status -eq $statusexit "systemctl status $service"
 
-    run systemctl show -P ActiveState "$service"
-    assert $status -eq 0 "systemctl show $service: $output"
+    echo "$_LOG_PROMPT systemctl show --value --property=ActiveState $service"
+    run systemctl show --value --property=ActiveState "$service"
+    echo "$output"
+    assert $status -eq 0 "systemctl show $service"
     is "$output" $activestate
 }
 
@@ -108,19 +120,47 @@ function service_cleanup() {
     systemctl daemon-reload
 }
 
+function create_secret() {
+    local secret_name=$(random_string)
+    local secret_file=$PODMAN_TMPDIR/secret_$(random_string)
+    local secret=$(random_string)
+
+    echo $secret > $secret_file
+    run_podman secret create $secret_name $secret_file
+
+    SECRET_NAME=$secret_name
+    SECRET=$secret
+}
+
+function remove_secret() {
+    local secret_name="$1"
+
+    run_podman secret rm $secret_name
+}
+
 @test "quadlet - basic" {
     local quadlet_file=$PODMAN_TMPDIR/basic_$(random_string).container
     cat > $quadlet_file <<EOF
 [Container]
 Image=$IMAGE
-Exec=sh -c "echo STARTED CONTAINER; echo "READY=1" | socat -u STDIN unix-sendto:\$NOTIFY_SOCKET; top"
+Exec=sh -c "echo STARTED CONTAINER; echo "READY=1" | socat -u STDIN unix-sendto:\$NOTIFY_SOCKET; sleep inf"
 Notify=yes
+LogDriver=passthrough
 EOF
 
     run_quadlet "$quadlet_file"
     service_setup $QUADLET_SERVICE_NAME
 
-    # Ensure we have output. Output is synced via sd-notify (socat in Exec)
+    # Check that we can read the logs from the container with podman logs even
+    # with the `passthrough` driver.  The log may need a short period of time
+    # to bubble up into the journal logs, so wait for it.
+    wait_for_output "STARTED CONTAINER" $QUADLET_CONTAINER_NAME
+    # Make sure it's an *exact* match, not just a substring (i.e. no spurious
+    # warnings or other cruft).
+    run_podman logs $QUADLET_CONTAINER_NAME
+    assert "$output" == "STARTED CONTAINER" "exact/full match when using the 'passthrough' driver"
+
+    # Also look for the logs via `journalctl`.
     run journalctl "--since=$STARTED_TIME" --unit="$QUADLET_SERVICE_NAME"
     is "$output" '.*STARTED CONTAINER.*'
 
@@ -137,6 +177,7 @@ EOF
 Image=$IMAGE
 Exec=sh -c "echo OUTPUT: \"\$FOOBAR\" \"\$BAR\""
 Environment="FOOBAR=Foo  Bar" BAR=bar
+LogDriver=passthrough
 EOF
 
     run_quadlet "$quadlet_file"
@@ -396,8 +437,199 @@ EOF
     run_podman container inspect  --format "{{.State.Status}}" test_pod-test
     is "$output" "running" "container should be started by systemd and hence be running"
 
-    service_cleanup $QUADLET_SERVICE_NAME inactive
+    # The service is marked as failed as the service container exits non-zero.
+    service_cleanup $QUADLET_SERVICE_NAME failed
     run_podman rmi $(pause_image)
+}
+
+@test "quadlet - rootfs" {
+    skip_if_no_selinux
+    skip_if_rootless
+    local quadlet_file=$PODMAN_TMPDIR/basic_$(random_string).container
+    cat > $quadlet_file <<EOF
+[Container]
+Rootfs=/:O
+Exec=sh -c "echo STARTED CONTAINER; echo "READY=1" | socat -u STDIN unix-sendto:\$NOTIFY_SOCKET; top"
+EOF
+
+    run_quadlet "$quadlet_file"
+    service_setup $QUADLET_SERVICE_NAME
+
+    # Ensure we have output. Output is synced via sd-notify (socat in Exec)
+    run journalctl "--since=$STARTED_TIME" --unit="$QUADLET_SERVICE_NAME"
+    is "$output" '.*STARTED CONTAINER.*'
+}
+
+@test "quadlet - selinux disable" {
+    skip_if_no_selinux
+    local quadlet_file=$PODMAN_TMPDIR/basic_$(random_string).container
+    cat > $quadlet_file <<EOF
+[Container]
+Image=$IMAGE
+SecurityLabelDisable=true
+Exec=sh -c "echo STARTED CONTAINER; echo "READY=1" | socat -u STDIN unix-sendto:\$NOTIFY_SOCKET; top"
+EOF
+
+    run_quadlet "$quadlet_file"
+    service_setup $QUADLET_SERVICE_NAME
+
+    # Ensure we have output. Output is synced via sd-notify (socat in Exec)
+    run journalctl "--since=$STARTED_TIME" --unit="$QUADLET_SERVICE_NAME"
+    is "$output" '.*STARTED CONTAINER.*'
+
+    run_podman container inspect  --format "{{.ProcessLabel}}" $QUADLET_CONTAINER_NAME
+    is "$output" "" "container should be started without specifying a Process Label"
+
+    service_cleanup $QUADLET_SERVICE_NAME failed
+}
+
+@test "quadlet - selinux labels" {
+    skip_if_no_selinux
+    NAME=$(random_string)
+    local quadlet_file=$PODMAN_TMPDIR/basic_$(random_string).container
+    cat > $quadlet_file <<EOF
+[Container]
+ContainerName=$NAME
+Image=$IMAGE
+SecurityLabelType=spc_t
+SecurityLabelLevel=s0:c100,c200
+SecurityLabelFileType=container_ro_file_t
+Exec=sh -c "echo STARTED CONTAINER; echo "READY=1" | socat -u STDIN unix-sendto:\$NOTIFY_SOCKET; top"
+EOF
+
+    run_quadlet "$quadlet_file"
+    service_setup $QUADLET_SERVICE_NAME
+
+    # Ensure we have output. Output is synced via sd-notify (socat in Exec)
+    run journalctl "--since=$STARTED_TIME" --unit="$QUADLET_SERVICE_NAME"
+    is "$output" '.*STARTED CONTAINER.*'
+
+    run_podman container ps
+    run_podman container inspect  --format "{{.ProcessLabel}}" $NAME
+    is "$output" "system_u:system_r:spc_t:s0:c100,c200" "container should be started with correct Process Label"
+    run_podman container inspect  --format "{{.MountLabel}}" $NAME
+    is "$output" "system_u:object_r:container_ro_file_t:s0:c100,c200" "container should be started with correct Mount Label"
+
+    service_cleanup $QUADLET_SERVICE_NAME failed
+}
+
+@test "quadlet - secret as environment variable" {
+    create_secret
+
+    local quadlet_file=$PODMAN_TMPDIR/basic_$(random_string).container
+    cat > $quadlet_file <<EOF
+[Container]
+ContainerName=$NAME
+Image=$IMAGE
+Secret=$SECRET_NAME,type=env,target=MYSECRET
+Exec=sh -c "echo STARTED CONTAINER; echo "READY=1" | socat -u STDIN unix-sendto:\$NOTIFY_SOCKET; top"
+EOF
+
+    run_quadlet "$quadlet_file"
+    service_setup $QUADLET_SERVICE_NAME
+
+    # Ensure we have output. Output is synced via sd-notify (socat in Exec)
+    run journalctl "--since=$STARTED_TIME" --unit="$QUADLET_SERVICE_NAME"
+    is "$output" '.*STARTED CONTAINER.*'
+
+    run_podman exec $QUADLET_CONTAINER_NAME /bin/sh -c "printenv MYSECRET"
+    is "$output" $SECRET
+
+    service_cleanup $QUADLET_SERVICE_NAME failed
+    remove_secret $SECRET_NAME
+}
+
+@test "quadlet - secret as a file" {
+    create_secret
+
+    local quadlet_file=$PODMAN_TMPDIR/basic_$(random_string).container
+    cat > $quadlet_file <<EOF
+[Container]
+ContainerName=$NAME
+Image=$IMAGE
+Secret=$SECRET_NAME,type=mount,target=/root/secret
+Exec=sh -c "echo STARTED CONTAINER; echo "READY=1" | socat -u STDIN unix-sendto:\$NOTIFY_SOCKET; top"
+EOF
+
+    run_quadlet "$quadlet_file"
+    service_setup $QUADLET_SERVICE_NAME
+
+    # Ensure we have output. Output is synced via sd-notify (socat in Exec)
+    run journalctl "--since=$STARTED_TIME" --unit="$QUADLET_SERVICE_NAME"
+    is "$output" '.*STARTED CONTAINER.*'
+
+    run_podman exec $QUADLET_CONTAINER_NAME /bin/sh -c "cat /root/secret"
+    is "$output" $SECRET
+
+    service_cleanup $QUADLET_SERVICE_NAME failed
+    remove_secret $SECRET_NAME
+}
+
+@test "quadlet - volume path using specifier" {
+    local tmp_path=$(mktemp -d --tmpdir=$PODMAN_TMPDIR quadlet.volume.XXXXXX)
+    local tmp_dir=${tmp_path#/tmp/}
+    local file_name="f$(random_string 10).txt"
+    local file_content="data_$(random_string 15)"
+    echo $file_content > $tmp_path/$file_name
+
+    local quadlet_file=$PODMAN_TMPDIR/basic_$(random_string).container
+    cat > $quadlet_file <<EOF
+[Container]
+Image=$IMAGE
+Volume=%T/$tmp_dir:/test_content:Z
+Exec=sh -c "echo STARTED CONTAINER; echo "READY=1" | socat -u STDIN unix-sendto:\$NOTIFY_SOCKET; top"
+EOF
+
+    run_quadlet "$quadlet_file"
+    service_setup $QUADLET_SERVICE_NAME
+
+    run_podman exec $QUADLET_CONTAINER_NAME /bin/sh -c "cat /test_content/$file_name"
+    is "$output" $file_content
+
+    rm -rf $tmp_path
+}
+
+@test "quadlet - tmpfs" {
+    local quadlet_file=$PODMAN_TMPDIR/basic_$(random_string).container
+    cat > $quadlet_file <<EOF
+[Container]
+Image=$IMAGE
+Exec=top
+Tmpfs=/tmpfs1
+Tmpfs=/tmpfs2:ro
+EOF
+
+    run_quadlet "$quadlet_file"
+    service_setup $QUADLET_SERVICE_NAME
+
+    run_podman container inspect  --format '{{index .HostConfig.Tmpfs "/tmpfs1"}}' $QUADLET_CONTAINER_NAME
+    is "$output" "rw,rprivate,nosuid,nodev,tmpcopyup" "regular tmpfs mount"
+
+    run_podman container inspect  --format '{{index .HostConfig.Tmpfs "/tmpfs2"}}' $QUADLET_CONTAINER_NAME
+    is "$output" "ro,rprivate,nosuid,nodev,tmpcopyup" "read-only tmpfs mount"
+
+    run_podman container inspect  --format '{{index .HostConfig.Tmpfs "/tmpfs3"}}' $QUADLET_CONTAINER_NAME
+    is "$output" "" "nonexistent tmpfs mount"
+
+    service_cleanup $QUADLET_SERVICE_NAME failed
+}
+
+@test "quadlet - userns" {
+    local quadlet_file=$PODMAN_TMPDIR/basic_$(random_string).container
+    cat > $quadlet_file <<EOF
+[Container]
+Image=$IMAGE
+Exec=top
+UserNS=keep-id:uid=200,gid=210
+EOF
+
+    run_quadlet "$quadlet_file"
+    service_setup $QUADLET_SERVICE_NAME
+
+    run_podman container inspect --format '{{.Config.CreateCommand}}' $QUADLET_CONTAINER_NAME
+    is "${output/* --userns keep-id:uid=200,gid=210 */found}" "found"
+
+    service_cleanup $QUADLET_SERVICE_NAME failed
 }
 
 # vim: filetype=sh

@@ -74,7 +74,7 @@ CIRRUS_REPO_NAME=${CIRRUS_REPO_NAME:-podman}
 # Cirrus only sets $CIRRUS_BASE_SHA properly for PRs, but $EPOCH_TEST_COMMIT
 # needs to be set from this value in order for `make validate` to run properly.
 # When running get_ci_vm.sh, most $CIRRUS_xyz variables are empty. Attempt
-# to accomidate both branch and get_ci_vm.sh testing by discovering the base
+# to accommodate both branch and get_ci_vm.sh testing by discovering the base
 # branch SHA value.
 # shellcheck disable=SC2154
 if [[ -z "$CIRRUS_BASE_SHA" ]] && [[ -z "$CIRRUS_TAG" ]]
@@ -93,7 +93,7 @@ EPOCH_TEST_COMMIT="$CIRRUS_BASE_SHA"
 # contexts, such as host->container or root->rootless user
 #
 # List of envariables which must be EXACT matches
-PASSTHROUGH_ENV_EXACT='CGROUP_MANAGER|DEST_BRANCH|DISTRO_NV|GOCACHE|GOPATH|GOSRC|NETWORK_BACKEND|OCI_RUNTIME|ROOTLESS_USER|SCRIPT_BASE|SKIP_USERNS|EC2_INST_TYPE'
+PASSTHROUGH_ENV_EXACT='CGROUP_MANAGER|DEST_BRANCH|DISTRO_NV|GOCACHE|GOPATH|GOSRC|NETWORK_BACKEND|OCI_RUNTIME|ROOTLESS_USER|SCRIPT_BASE|SKIP_USERNS|EC2_INST_TYPE|PODMAN_DB'
 
 # List of envariable patterns which must match AT THE BEGINNING of the name.
 PASSTHROUGH_ENV_ATSTART='CI|TEST'
@@ -204,6 +204,14 @@ install_test_configs() {
 }
 
 use_cni() {
+    req_env_vars OS_RELEASE_ID PACKAGE_DOWNLOAD_DIR SCRIPT_BASE
+    # Defined by common automation library
+    # shellcheck disable=SC2154
+    if [[ "$OS_RELEASE_ID" =~ "debian" ]]; then
+        # Supporting it involves swapping the rpm & dnf commands below
+        die "Testing debian w/ CNI networking currently not supported"
+    fi
+
     msg "Unsetting NETWORK_BACKEND for all subsequent environments."
     echo "export -n NETWORK_BACKEND" >> /etc/ci_environment
     echo "unset NETWORK_BACKEND" >> /etc/ci_environment
@@ -238,6 +246,7 @@ use_cni() {
 }
 
 use_netavark() {
+    req_env_vars OS_RELEASE_ID PRIOR_FEDORA_NAME DISTRO_NV
     local magickind repokind
     msg "Forcing NETWORK_BACKEND=netavark for all subsequent environments."
     echo "NETWORK_BACKEND=netavark" >> /etc/ci_environment
@@ -251,7 +260,9 @@ use_netavark() {
     # See ./contrib/cirrus/CIModes.md.
     # Vars defined by cirrus-ci
     # shellcheck disable=SC2154
-    if [[ "$CIRRUS_CHANGE_TITLE" =~ CI:[AN]V[AN]V= ]]; then
+    if [[ ! "$OS_RELEASE_ID" =~ "debian" ]] && \
+       [[ "$CIRRUS_CHANGE_TITLE" =~ CI:[AN]V[AN]V= ]]
+    then
         # shellcheck disable=SC2154
         if [[ "$CIRRUS_PR_DRAFT" != "true" ]]; then
             die "Magic 'CI:NVAV=*' string can only be used on DRAFT PRs"
@@ -306,7 +317,7 @@ remove_packaged_podman_files() {
 
     # OS_RELEASE_ID is defined by automation-library
     # shellcheck disable=SC2154
-    if [[ "$OS_RELEASE_ID" =~ "ubuntu" ]]
+    if [[ "$OS_RELEASE_ID" =~ "debian" ]]
     then
         LISTING_CMD="dpkg-query -L podman"
     else
@@ -328,25 +339,30 @@ remove_packaged_podman_files() {
 # Execute make localbenchmarks in $CIRRUS_WORKING_DIR/data
 # for preserving as a task artifact.
 localbenchmarks() {
-    local datadir
+    local datadir envnames envname
     req_env_vars DISTRO_NV PODBIN_NAME PRIV_NAME TEST_ENVIRON TEST_FLAVOR
     req_env_vars VM_IMAGE_NAME EC2_INST_TYPE
 
     datadir=$CIRRUS_WORKING_DIR/data
     mkdir -p $datadir
 
+    envnames=$(passthrough_envars | sort);
     (
       echo "# Env. var basis for benchmarks benchmarks."
-      printenv | grep -Ev "$SECRET_ENV_RE" | sort
+      for envname in $envnames; do
+        printf "$envname=%q\n" "${!envname}"
+      done
 
       echo "# Machine details for data-comparison sake, not actual env. vars."
       # Checked above in req_env_vars
       # shellcheck disable=SC2154
       echo "\
+BENCH_ENV_VER=1
 CPUTOTAL=$(grep -ce '^processor' /proc/cpuinfo)
-INST_TYPE=$EC2_INST_TYPE  # one day may include other cloud's VM types.
-MEMTOTAL=$(awk -F: '$1 == "MemTotal" { print $2 }' </proc/meminfo | sed -e "s/^ *//")
-UNAME_RM=$(uname -r -m)
+INST_TYPE=$EC2_INST_TYPE
+MEMTOTALKB=$(awk -F: '$1 == "MemTotal" { print $2 }' </proc/meminfo | sed -e "s/^ *//" | cut -d ' ' -f 1)
+UNAME_R=$(uname -r)
+UNAME_M=$(uname -m)
 "
     ) > $datadir/benchmarks.env
     make localbenchmarks | tee $datadir/benchmarks.raw

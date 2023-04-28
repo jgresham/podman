@@ -93,6 +93,25 @@ host.slirp4netns.executable | $expr_path
     is "$output" "$CI_DESIRED_NETWORK" "CI_DESIRED_NETWORK (from .cirrus.yml)"
 }
 
+@test "podman info - confirm desired database" {
+    if [[ -z "$CI_DESIRED_DATABASE" ]]; then
+        # When running in Cirrus, CI_DESIRED_DATABASE *must* be defined
+        # in .cirrus.yml so we can double-check that all CI VMs are
+        # using netavark or cni as desired.
+        if [[ -n "$CIRRUS_CI" ]]; then
+            die "CIRRUS_CI is set, but CI_DESIRED_DATABASE is not! See #16389"
+        fi
+
+        # Not running under Cirrus (e.g., gating tests, or dev laptop).
+        # Totally OK to skip this test.
+        skip "CI_DESIRED_DATABASE is unset--OK, because we're not in Cirrus"
+    fi
+
+    run_podman info --format '{{.Host.DatabaseBackend}}'
+    is "$output" "$CI_DESIRED_DATABASE" "CI_DESIRED_DATABASE (from .cirrus.yml)"
+}
+
+
 # 2021-04-06 discussed in watercooler: RHEL must never use crun, even if
 # using cgroups v2.
 @test "podman info - RHEL8 must use runc" {
@@ -148,6 +167,44 @@ host.slirp4netns.executable | $expr_path
         run_podman --storage-driver=vfs --root ${PODMAN_TMPDIR}/nothing-here-move-along --volumepath ${volumePath} info --format '{{ .Store.VolumePath }}'
         is "$output" "${volumePath}" "'podman --volumepath should reset VolumePath"
     fi
+}
+
+@test "podman --db-backend info - basic output" {
+    # TODO: this tests needs to change once sqlite is being tested in the system tests
+    skip_if_remote "--db-backend does not work on a remote client"
+    for backend in boltdb sqlite; do
+        run_podman --db-backend=$backend info --format "{{ .Host.DatabaseBackend }}"
+        is "$output" "$backend"
+    done
+
+    run_podman 125 --db-backend=bogus info --format "{{ .Host.DatabaseBackend }}"
+    is "$output" "Error: unsupported database backend: \"bogus\""
+}
+
+@test "CONTAINERS_CONF_OVERRIDE" {
+    skip_if_remote "remote does not support CONTAINERS_CONF*"
+
+    containersConf=$PODMAN_TMPDIR/containers.conf
+    cat >$containersConf <<EOF
+[engine]
+database_backend = "boltdb"
+EOF
+
+    overrideConf=$PODMAN_TMPDIR/override.conf
+    cat >$overrideConf <<EOF
+[engine]
+database_backend = "sqlite"
+EOF
+
+    CONTAINERS_CONF="$containersConf" run_podman info --format "{{ .Host.DatabaseBackend }}"
+    is "$output" "boltdb"
+
+    CONTAINERS_CONF_OVERRIDE=$overrideConf run_podman info --format "{{ .Host.DatabaseBackend }}"
+    is "$output" "sqlite"
+
+    # CONTAINERS_CONF will be overridden by _OVERRIDE
+    CONTAINERS_CONF=$containersConf CONTAINERS_CONF_OVERRIDE=$overrideConf run_podman info --format "{{ .Host.DatabaseBackend }}"
+    is "$output" "sqlite"
 }
 
 # vim: filetype=sh

@@ -89,10 +89,13 @@ func GenerateKube(w http.ResponseWriter, r *http.Request) {
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
 	decoder := r.Context().Value(api.DecoderKey).(*schema.Decoder)
 	query := struct {
-		Names   []string `schema:"names"`
-		Service bool     `schema:"service"`
+		Names    []string `schema:"names"`
+		Service  bool     `schema:"service"`
+		Type     string   `schema:"type"`
+		Replicas int32    `schema:"replicas"`
 	}{
 		// Defaults would go here.
+		Replicas: 1,
 	}
 
 	if err := decoder.Decode(&query, r.URL.Query()); err != nil {
@@ -100,8 +103,19 @@ func GenerateKube(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Read the default kubeGenerateType from containers.conf it the user doesn't specify it
+	generateType := query.Type
+	if generateType == "" {
+		config, err := runtime.GetConfigNoCopy()
+		if err != nil {
+			utils.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		generateType = config.Engine.KubeGenerateType
+	}
+
 	containerEngine := abi.ContainerEngine{Libpod: runtime}
-	options := entities.GenerateKubeOptions{Service: query.Service}
+	options := entities.GenerateKubeOptions{Service: query.Service, Type: generateType, Replicas: query.Replicas}
 	report, err := containerEngine.GenerateKube(r.Context(), query.Names, options)
 	if err != nil {
 		utils.Error(w, http.StatusInternalServerError, fmt.Errorf("generating YAML: %w", err))

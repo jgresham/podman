@@ -178,13 +178,8 @@ EOF
 
     # By default, volumes are mounted exec, but we have manually added the
     # noexec option. This should fail.
-    # ARGH. Unfortunately, runc (used for cgroups v1) has different exit status
-    local expect_rc=126
-    if [[ $(podman_runtime) = "runc" ]]; then
-        expect_rc=1
-    fi
+    run_podman 126 run --rm --volume $myvolume:/vol:noexec,z $IMAGE /vol/myscript
 
-    run_podman ${expect_rc} run --rm --volume $myvolume:/vol:noexec,z $IMAGE /vol/myscript
     # crun and runc emit different messages, and even runc is inconsistent
     # with itself (output changed some time in 2022?). Deal with all.
     assert "$output" =~ 'exec.* permission denied' "run on volume, noexec"
@@ -453,13 +448,13 @@ NeedsChown    | true
         # and does not work remotely
         run_podman volume mount ${myvolume}
         mnt=${output}
-	echo $mytext >$mnt/$myfile
+        echo $mytext >$mnt/$myfile
         run_podman run -v ${myvolume}:/vol:z $IMAGE cat /vol/$myfile
-	is "$output" "$mytext" "$myfile should exist within the containers volume and contain $mytext"
+        is "$output" "$mytext" "$myfile should exist within the containers volume and contain $mytext"
         run_podman volume unmount ${myvolume}
     else
         run_podman 125 volume mount ${myvolume}
-	is "$output" "Error: cannot run command \"podman volume mount\" in rootless mode, must execute.*podman unshare.*first" "Should fail and complain about unshare"
+        is "$output" "Error: cannot run command \"podman volume mount\" in rootless mode, must execute.*podman unshare.*first" "Should fail and complain about unshare"
     fi
 }
 
@@ -484,19 +479,19 @@ EOF
     is "$output" "tmpfs" "Should be tmpfs"
 
     run_podman 1 run --image-volume ignore --rm volume_image stat -f -c %T /data
-    is "$output" "stat: can't read file system information for '/data': No such file or directory" "Should fail with /data does not exists"
+    is "$output" "stat: can't read file system information for '/data': No such file or directory" "Should fail with /data does not exist"
 
-    CONTAINERS_CONF="$containersconf" run_podman run --rm volume_image stat -f -c %T /data
+    CONTAINERS_CONF_OVERRIDE="$containersconf" run_podman run --rm volume_image stat -f -c %T /data
     is "$output" "tmpfs" "Should be tmpfs"
 
-    CONTAINERS_CONF="$containersconf" run_podman run --image-volume bind --rm volume_image stat -f -c %T /data
+    CONTAINERS_CONF_OVERRIDE="$containersconf" run_podman run --image-volume bind --rm volume_image stat -f -c %T /data
     assert "$output" != "tmpfs" "Should match hosts $fs"
 
-    CONTAINERS_CONF="$containersconf" run_podman run --image-volume tmpfs --rm volume_image stat -f -c %T /data
+    CONTAINERS_CONF_OVERRIDE="$containersconf" run_podman run --image-volume tmpfs --rm volume_image stat -f -c %T /data
     is "$output" "tmpfs" "Should be tmpfs"
 
-    CONTAINERS_CONF="$containersconf" run_podman 1 run --image-volume ignore --rm volume_image stat -f -c %T /data
-    is "$output" "stat: can't read file system information for '/data': No such file or directory" "Should fail with /data does not exists"
+    CONTAINERS_CONF_OVERRIDE="$containersconf" run_podman 1 run --image-volume ignore --rm volume_image stat -f -c %T /data
+    is "$output" "stat: can't read file system information for '/data': No such file or directory" "Should fail with /data does not exist"
 
     run_podman rm --all --force -t 0
     run_podman image rm --force localhost/volume_image
@@ -522,6 +517,16 @@ EOF
 
     # Clean up
     run_podman rm -f -t 0 -a
+}
+
+@test "podman run with building volume and selinux file label" {
+    skip_if_no_selinux
+    run_podman create --security-opt label=filetype:usr_t --volume myvol:/myvol $IMAGE top
+    run_podman volume inspect myvol --format '{{ .Mountpoint }}'
+    path=${output}
+    run ls -Zd $path
+    is "$output" "system_u:object_r:usr_t:s0 $path" "volume should be labeled with usr_t type"
+    run_podman volume rm myvol --force
 }
 
 

@@ -71,8 +71,8 @@ load helpers
     run_podman --events-backend=file events --stream=false --filter type=image --since $t0
     is "$output" ".*image push $imageID dir:$pushedDir
 .*image save $imageID $tarball
-.*image loadfromarchive *$tarball
-.*image pull *docker-archive:$tarball
+.*image loadfromarchive $imageID $tarball
+.*image pull $imageID docker-archive:$tarball
 .*image tag $imageID $tag
 .*image untag $imageID $tag:latest
 .*image tag $imageID $tag
@@ -149,7 +149,7 @@ function _events_disjunctive_filters() {
 [engine]
 events_logfile_path="$events_file"
 EOF
-    CONTAINERS_CONF="$containersconf" run_podman --events-backend=file pull $IMAGE
+    CONTAINERS_CONF_OVERRIDE="$containersconf" run_podman --events-backend=file pull $IMAGE
     assert "$(< $events_file)" =~ "\"Name\":\"$IMAGE\"" "Image found in events"
 }
 
@@ -163,7 +163,7 @@ function _populate_events_file() {
 }
 
 @test "events log-file rotation" {
-    skip_if_remote "setting CONTAINERS_CONF logger options does not affect remote client"
+    skip_if_remote "setting CONTAINERS_CONF_OVERRIDE logger options does not affect remote client"
 
     # Make sure that the events log file is (not) rotated depending on the
     # settings in containers.conf.
@@ -178,14 +178,14 @@ events_logfile_path="$eventsFile"
 EOF
 
     # Check that a non existing event file does not cause a hang (#15688)
-    CONTAINERS_CONF=$containersConf run_podman events --stream=false
+    CONTAINERS_CONF_OVERRIDE=$containersConf run_podman events --stream=false
 
     _populate_events_file $eventsFile
 
     # Create events *without* a limit and make sure that it has not been
     # rotated/truncated.
     contentBefore=$(head -n100 $eventsFile)
-    CONTAINERS_CONF=$containersConf run_podman run --rm $IMAGE true
+    CONTAINERS_CONF_OVERRIDE=$containersConf run_podman run --rm $IMAGE true
     contentAfter=$(head -n100 $eventsFile)
     is "$contentBefore" "$contentAfter" "events file has not been rotated"
 
@@ -209,7 +209,8 @@ EOF
     expectedContentAfterTruncation=$PODMAN_TMPDIR/truncated.txt
 
     run_podman create $IMAGE
-    CONTAINERS_CONF=$containersConf run_podman rm $output
+    ctrID=$output
+    CONTAINERS_CONF_OVERRIDE=$containersConf run_podman rm $ctrID
     tail -n52 $eventsFile >> $expectedContentAfterTruncation
 
     # Make sure the events file looks as expected.
@@ -217,9 +218,81 @@ EOF
 
     # Make sure that `podman events` can read the file, and that it returns the
     # same amount of events.  We checked the contents before.
-    CONTAINERS_CONF=$containersConf run_podman events --stream=false --since="2022-03-06T11:26:42.723667984+02:00"
-    assert "${#lines[@]}" = 51 "Number of events returned"
-    is "${lines[-2]}" ".* log-rotation $eventsFile"
+    CONTAINERS_CONF_OVERRIDE=$containersConf run_podman events --stream=false --since="2022-03-06T11:26:42.723667984+02:00" --format=json
+    assert "${#lines[@]}" = 52 "Number of events returned"
+    is "${lines[0]}" "{\"Name\":\"$eventsFile\",\"Status\":\"log-rotation\",\"Time\":\".*\",\"Type\":\"system\",\"Attributes\":{\"io.podman.event.rotate\":\"begin\"}}"
+    is "${lines[-2]}" "{\"Name\":\"$eventsFile\",\"Status\":\"log-rotation\",\"Time\":\".*\",\"Type\":\"system\",\"Attributes\":{\"io.podman.event.rotate\":\"end\"}}"
+    is "${lines[-1]}" "{\"ID\":\"$ctrID\",\"Image\":\"$IMAGE\",\"Name\":\".*\",\"Status\":\"remove\",\"Time\":\".*\",\"Type\":\"container\",\"Attributes\":{.*}}"
+}
+
+@test "events log-file no duplicates" {
+    skip_if_remote "setting CONTAINERS_CONF_OVERRIDE logger options does not affect remote client"
+
+    # This test makes sure that events are not returned more than once when
+    # streaming during a log-file rotation.
+    eventsFile=$PODMAN_TMPDIR/events.txt
+    eventsJSON=$PODMAN_TMPDIR/events.json
+    containersConf=$PODMAN_TMPDIR/containers.conf
+    cat >$containersConf <<EOF
+[engine]
+events_logger="file"
+events_logfile_path="$eventsFile"
+# The populated file has a size of 11300, so let's create a couple of events to
+# force a log rotation.
+events_logfile_max_size=11300
+EOF
+
+    _populate_events_file $eventsFile
+    CONTAINERS_CONF_OVERRIDE=$containersConf timeout --kill=10 20 \
+        $PODMAN events --stream=true --since="2022-03-06T11:26:42.723667984+02:00" --format=json > $eventsJSON &
+
+    # Now wait for the above podman-events process to write to the eventsJSON
+    # file, so we know it's reading.
+    retries=20
+    while [[ $retries -gt 0 ]]; do
+        if [ -s $eventsJSON ]; then
+            break
+        fi
+        retries=$((retries - 1))
+        sleep 0.5
+    done
+    assert $retries -gt 0 \
+           "Timed out waiting for podman-events to start reading pre-existing events"
+
+    CONTAINERS_CONF_OVERRIDE=$containersConf run_podman create $IMAGE
+    ctrID=$output
+    CONTAINERS_CONF_OVERRIDE=$containersConf run_podman rm -f $ctrID
+
+    # Now wait for the last event above to be read by the `podman-events`
+    # process above.
+    retries=20
+    while [[ $retries -gt 0 ]]; do
+        run grep "\"Status\"\:\"remove\"," $eventsJSON
+        if [[ $status -eq 0 ]]; then
+            break
+        fi
+        retries=$((retries - 1))
+        sleep 0.5
+    done
+    test "$status" = 0 || die "Did not find expected 'Status:remove' line in log"
+
+    # Make sure that the log file has been rotated as expected.
+    run cat $eventsFile
+    assert "${#lines[@]}" = 54 "Number of events in $eventsFile" # 49 previous + 2 rotation + pull/create/rm
+    is "${lines[0]}" "{\"Name\":\"$eventsFile\",\"Status\":\"log-rotation\",\"Time\":\".*\",\"Type\":\"system\",\"Attributes\":{\"io.podman.event.rotate\":\"begin\"}}"
+    is "${lines[1]}" "{\"Name\":\"busybox\",\"Status\":\"pull\",\"Time\":\"2022-04-06T11:26:42.723667951+02:00\",\"Type\":\"image\",\"Attributes\":null}"
+    is "${lines[49]}" "{\"Name\":\"busybox\",\"Status\":\"pull\",\"Time\":\"2022-04-06T11:26:42.723667999+02:00\",\"Type\":\"image\",\"Attributes\":null}"
+    is "${lines[50]}" "{\"Name\":\"$eventsFile\",\"Status\":\"log-rotation\",\"Time\":\".*\",\"Type\":\"system\",\"Attributes\":{\"io.podman.event.rotate\":\"end\"}}"
+    is "${lines[53]}" "{\"ID\":\"$ctrID\",\"Image\":\"$IMAGE\",\"Name\":\".*\",\"Status\":\"remove\",\"Time\":\".*\",\"Type\":\"container\",\"Attributes\":{.*}}"
+
+
+    # Make sure that the JSON stream looks as expected. That means it has all
+    # events and no duplicates.
+    run cat $eventsJSON
+    is "${lines[0]}" "{\"Name\":\"busybox\",\"Status\":\"pull\",\"Time\":\"2022-04-06T11:26:42.7236679+02:00\",\"Type\":\"image\",\"Attributes\":null}"
+    is "${lines[99]}" "{\"Name\":\"busybox\",\"Status\":\"pull\",\"Time\":\"2022-04-06T11:26:42.723667999+02:00\",\"Type\":\"image\",\"Attributes\":null}"
+    is "${lines[100]}" "{\"Name\":\"$eventsFile\",\"Status\":\"log-rotation\",\"Time\":\".*\",\"Type\":\"system\",\"Attributes\":{\"io.podman.event.rotate\":\"end\"}}"
+    is "${lines[103]}" "{\"ID\":\"$ctrID\",\"Image\":\"$IMAGE\",\"Name\":\".*\",\"Status\":\"remove\",\"Time\":\".*\",\"Type\":\"container\",\"Attributes\":{.*}}"
 }
 
 # Prior to #15633, container labels would not appear in 'die' log events
@@ -261,22 +334,22 @@ EOF
     local cname=c$(random_string 15)
     t0=$(date --iso-8601=seconds)
 
-    CONTAINERS_CONF=$containersConf run_podman create --name=$cname $IMAGE
-    CONTAINERS_CONF=$containersConf run_podman container inspect --size=true $cname
+    CONTAINERS_CONF_OVERRIDE=$containersConf run_podman create --name=$cname $IMAGE
+    CONTAINERS_CONF_OVERRIDE=$containersConf run_podman container inspect --size=true $cname
     inspect_json=$(jq -r --tab . <<< "$output")
 
-    CONTAINERS_CONF=$containersConf run_podman --events-backend=$1 events \
+    CONTAINERS_CONF_OVERRIDE=$containersConf run_podman --events-backend=$1 events \
         --since="$t0"           \
         --filter=status=$cname  \
         --filter=status=create  \
         --stream=false          \
         --format="{{.ContainerInspectData}}"
     events_json=$(jq -r --tab . <<< "[$output]")
-    assert "$inspect_json" = "$events_json" "JSON payload in event attributes is the same as the inspect one"
+    assert "$events_json" = "$inspect_json" "JSON payload in event attributes is the same as the inspect one"
 
     # Make sure that the inspect data doesn't show by default in
     # podman-events.
-    CONTAINERS_CONF=$containersConf run_podman --events-backend=$1 events \
+    CONTAINERS_CONF_OVERRIDE=$containersConf run_podman --events-backend=$1 events \
         --since="$t0"           \
         --filter=status=$cname  \
         --filter=status=create  \
@@ -285,10 +358,16 @@ EOF
     assert "$output" != ".*EffectiveCaps.*"
 }
 
-@test "events - container inspect data" {
+@test "events - container inspect data - journald" {
     skip_if_remote "remote does not support --events-backend"
+    skip_if_journald_unavailable
 
     _events_container_create_inspect_data journald
+}
+
+@test "events - container inspect data - file" {
+    skip_if_remote "remote does not support --events-backend"
+
     _events_container_create_inspect_data file
 }
 

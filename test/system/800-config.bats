@@ -13,12 +13,15 @@ load helpers
     runtime="$output"
     run_podman info --format "{{ .Host.OCIRuntime.Path }}"
     ocipath="$output"
+    run_podman info --format '{{ .Host.DatabaseBackend }}'
+    db_backend="$output"
 
     # Make an innocuous containers.conf in a non-standard location
     conf_tmp="$PODMAN_TMPDIR/containers.conf"
     cat >$conf_tmp <<EOF
 [engine]
 runtime="$runtime"
+database_backend="$db_backend"
 [engine.runtimes]
 $runtime = ["$ocipath"]
 EOF
@@ -43,11 +46,14 @@ EOF
     # Get the path of the normal runtime
     run_podman info --format "{{ .Host.OCIRuntime.Path }}"
     ocipath="$output"
+    run_podman info --format '{{ .Host.DatabaseBackend }}'
+    db_backend="$output"
 
     export conf_tmp="$PODMAN_TMPDIR/nonstandard_runtime_name.conf"
     cat > $conf_tmp <<EOF
 [engine]
 runtime = "nonstandard_runtime_name"
+database_backend="$db_backend"
 [engine.runtimes]
 nonstandard_runtime_name = ["$ocipath"]
 EOF
@@ -62,7 +68,7 @@ EOF
     # container" errors from podman wait.
     CONTAINERS_CONF="$conf_tmp" run_podman '?' wait "$cid"
     if [[ $status != 0 ]]; then
-	is "$output" "Error:.*no such container" "unexpected error from podman wait"
+        is "$output" "Error:.*no such container" "unexpected error from podman wait"
     fi
 
     # The --rm option means the container should no longer exist.

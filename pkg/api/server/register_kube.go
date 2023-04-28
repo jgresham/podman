@@ -37,6 +37,11 @@ func (s *APIServer) registerKubeHandlers(r *mux.Router) error {
 	//    default: true
 	//    description: Start the pod after creating it.
 	//  - in: query
+	//    name: serviceContainer
+	//    type: boolean
+	//    default: false
+	//    description: Starts a service container before all pods.
+	//  - in: query
 	//    name: staticIPs
 	//    type: array
 	//    description: Static IPs used for the pods.
@@ -48,6 +53,11 @@ func (s *APIServer) registerKubeHandlers(r *mux.Router) error {
 	//    description: Static MACs used for the pods.
 	//    items:
 	//      type: string
+	//  - in: query
+	//    name: wait
+	//    type: boolean
+	//    default: false
+	//    description: Clean up all objects created when a SIGTERM is received or pods exit.
 	//  - in: body
 	//    name: request
 	//    description: Kubernetes YAML file.
@@ -104,6 +114,17 @@ func (s *APIServer) registerKubeHandlers(r *mux.Router) error {
 	//    type: boolean
 	//    default: false
 	//    description: Generate YAML for a Kubernetes service object.
+	//  - in: query
+	//    name: type
+	//    type: string
+	//    default: pod
+	//    description: Generate YAML for the given Kubernetes kind.
+	//  - in: query
+	//    name: replicas
+	//    type: integer
+	//    format: int32
+	//    default: 0
+	//    description: Set the replica number for Deployment kind.
 	// produces:
 	// - text/vnd.yaml
 	// - application/json

@@ -114,7 +114,7 @@ function _log_test_multi() {
     doit c2 "sleep 1;echo b;sleep  2;echo c;sleep 3"
 
     run_podman ${events_backend} logs -f c1 c2
-    is "$output" \
+    assert "$output" =~ \
        "${cid[0]} a$etc
 ${cid[1]} b$etc
 ${cid[1]} c$etc
@@ -283,7 +283,7 @@ function _log_test_follow() {
     run_podman ${events_backend} logs -f $cname
     is "$output" "$contentA
 $contentB
-$contentC" "logs -f on exitted container works"
+$contentC" "logs -f on exited container works"
 
     run_podman ${events_backend} rm -t 0 -f $cname
 }
@@ -319,14 +319,14 @@ function _log_test_follow_since() {
 
     # Now do the same with a running container to check #16950.
     run_podman ${events_backend} run --log-driver=$driver --name $cname -d $IMAGE \
-        sh -c "sleep 0.5; while :; do echo $content && sleep 3; done"
+        sh -c "sleep 1; while :; do echo $content && sleep 5; done"
 
     # sleep is required to make sure the podman event backend no longer sees the start event in the log
     # This value must be greater or equal than the the value given in --since below
     sleep 0.2
 
     # Make sure podman logs actually follows by giving a low timeout and check that the command times out
-    PODMAN_TIMEOUT=2 run_podman 124 ${events_backend} logs --since 0.1s -f $cname
+    PODMAN_TIMEOUT=3 run_podman 124 ${events_backend} logs --since 0.1s -f $cname
     assert "$output" =~ "^$content
 timeout: sending signal TERM to command.*" "logs --since -f on running container works"
 
@@ -355,20 +355,22 @@ function _log_test_follow_until() {
     fi
 
     run_podman ${events_backend} run --log-driver=$driver --name $cname -d $IMAGE \
-        sh -c "while :; do echo $content && sleep 2; done"
+        sh -c "n=1;while :; do echo $content--\$n; n=\$((n+1));sleep 1; done"
 
     t0=$SECONDS
     # The logs command should exit after the until time even when follow is set
     PODMAN_TIMEOUT=10 run_podman ${events_backend} logs --until 3s -f $cname
     t1=$SECONDS
+    logs_seen="$output"
 
     # The delta should be 3 but because it could be a bit longer on a slow system such as CI we also accept 4.
     delta_t=$(( $t1 - $t0 ))
     assert $delta_t -gt 2 "podman logs --until: exited too early!"
     assert $delta_t -lt 5 "podman logs --until: exited too late!"
 
-    assert "$output" == "$content
-$content" "logs --until -f on running container works"
+    # Impossible to know how many lines we'll see, but require at least two
+    assert "$logs_seen" =~ "$content--1
+$content--2.*" "logs --until -f on running container works"
 
     run_podman ${events_backend} rm -t 0 -f $cname
 }

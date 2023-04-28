@@ -211,7 +211,9 @@ function teardown() {
     is "$output" "$cid" "podman container restore"
 
     # Signal the container to continue; this is where the 1-2-3s will come from
-    run_podman exec $cid rm /wait
+    # The '-d' is because container exit is racy: the exec process itself
+    # could get caught and killed by cleanup, causing this step to exit 137
+    run_podman exec -d $cid rm /wait
 
     # Wait for the container to stop
     run_podman wait $cid
@@ -401,6 +403,29 @@ function teardown() {
 
     run_podman rm -t 0 -f $cid
     run_podman network rm $netname
+}
+
+# rhbz#2177611 : podman breaks checkpoint/restore
+@test "podman checkpoint/restore the latest container" {
+    skip_if_remote "podman-remote does not support --latest option"
+    # checkpoint/restore -l must print the IDs
+    run_podman run -d $IMAGE top
+    ctrID="$output"
+    run_podman container checkpoint --latest
+    is "$output" "$ctrID"
+
+    run_podman container inspect \
+               --format '{{.State.Status}}:{{.State.Running}}:{{.State.Paused}}:{{.State.Checkpointed}}' $ctrID
+    is "$output" "exited:false:false:true" "State. Status:Running:Pause:Checkpointed"
+
+    run_podman container restore -l
+    is "$output" "$ctrID"
+
+    run_podman container inspect \
+               --format '{{.State.Status}}:{{.State.Running}}:{{.State.Paused}}:{{.State.Checkpointed}}' $ctrID
+    is "$output" "running:true:false:false" "State. Status:Running:Pause:Checkpointed"
+
+    run_podman rm -t 0 -f $ctrID
 }
 
 # vim: filetype=sh

@@ -245,7 +245,7 @@ var _ = Describe("Podman commit", func() {
 	})
 
 	It("podman commit container check env variables", func() {
-		s := podmanTest.Podman([]string{"run", "--name", "test1", "-e", "TEST=1=1-01=9.01", "-it", "alpine", "true"})
+		s := podmanTest.Podman([]string{"run", "--name", "test1", "-e", "TEST=1=1-01=9.01", "alpine", "true"})
 		s.WaitWithDefaultTimeout()
 		Expect(s).Should(Exit(0))
 
@@ -270,12 +270,8 @@ var _ = Describe("Podman commit", func() {
 		cwd, err := os.Getwd()
 		Expect(err).ToNot(HaveOccurred())
 		Expect(os.Chdir(os.TempDir())).To(Succeed())
-		targetPath, err := CreateTempDirInTempDir()
-		if err != nil {
-			os.Exit(1)
-		}
+		targetPath := podmanTest.TempDir
 		targetFile := filepath.Join(targetPath, "idFile")
-		defer Expect(os.RemoveAll(targetFile)).To(BeNil())
 		defer Expect(os.Chdir(cwd)).To(BeNil())
 
 		_, ec, _ := podmanTest.RunLsContainer("test1")

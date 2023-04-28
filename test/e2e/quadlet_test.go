@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 
 	"github.com/containers/podman/v4/pkg/systemd/parser"
+	"github.com/containers/podman/v4/version"
 	"github.com/mattn/go-shellwords"
 
 	. "github.com/containers/podman/v4/test/utils"
@@ -175,6 +177,65 @@ func (t *quadletTestcase) assertPodmanArgsRegex(args []string, unit *parser.Unit
 	return findSublistRegex(podmanArgs, args) != -1
 }
 
+func keyValueStringToMap(keyValueString, separator string) map[string]string {
+	keyValMap := make(map[string]string)
+	keyVarList := strings.Split(keyValueString, separator)
+	for _, param := range keyVarList {
+		kv := strings.Split(param, "=")
+		keyValMap[kv[0]] = kv[1]
+	}
+
+	return keyValMap
+}
+
+func keyValMapEqualRegex(expectedKeyValMap, actualKeyValMap map[string]string) bool {
+	if len(expectedKeyValMap) != len(actualKeyValMap) {
+		return false
+	}
+	for key, expectedValue := range expectedKeyValMap {
+		actualValue, ok := actualKeyValMap[key]
+		if !ok {
+			return false
+		}
+		matched, err := regexp.MatchString(expectedValue, actualValue)
+		if err != nil || !matched {
+			return false
+		}
+	}
+	return true
+}
+
+func (t *quadletTestcase) assertPodmanArgsKeyVal(args []string, unit *parser.UnitFile, key string, allowRegex bool) bool {
+	podmanArgs, _ := unit.LookupLastArgs("Service", key)
+
+	expectedKeyValMap := keyValueStringToMap(args[2], args[1])
+	argKeyLocation := 0
+	for {
+		subListLocation := findSublist(podmanArgs[argKeyLocation:], []string{args[0]})
+		if subListLocation == -1 {
+			break
+		}
+
+		argKeyLocation += subListLocation
+		actualKeyValMap := keyValueStringToMap(podmanArgs[argKeyLocation+1], args[1])
+		if allowRegex {
+			if keyValMapEqualRegex(expectedKeyValMap, actualKeyValMap) {
+				return true
+			}
+		} else if reflect.DeepEqual(expectedKeyValMap, actualKeyValMap) {
+			return true
+		}
+
+		argKeyLocation += 2
+
+		if argKeyLocation > len(podmanArgs) {
+			break
+		}
+	}
+
+	return false
+}
+
 func (t *quadletTestcase) assertPodmanFinalArgs(args []string, unit *parser.UnitFile, key string) bool {
 	podmanArgs, _ := unit.LookupLastArgs("Service", key)
 	if len(podmanArgs) < len(args) {
@@ -197,6 +258,14 @@ func (t *quadletTestcase) assertStartPodmanArgs(args []string, unit *parser.Unit
 
 func (t *quadletTestcase) assertStartPodmanArgsRegex(args []string, unit *parser.UnitFile) bool {
 	return t.assertPodmanArgsRegex(args, unit, "ExecStart")
+}
+
+func (t *quadletTestcase) assertStartPodmanArgsKeyVal(args []string, unit *parser.UnitFile) bool {
+	return t.assertPodmanArgsKeyVal(args, unit, "ExecStart", false)
+}
+
+func (t *quadletTestcase) assertStartPodmanArgsKeyValRegex(args []string, unit *parser.UnitFile) bool {
+	return t.assertPodmanArgsKeyVal(args, unit, "ExecStart", true)
 }
 
 func (t *quadletTestcase) assertStartPodmanFinalArgs(args []string, unit *parser.UnitFile) bool {
@@ -264,6 +333,10 @@ func (t *quadletTestcase) doAssert(check []string, unit *parser.UnitFile, sessio
 		ok = t.assertStartPodmanArgs(args, unit)
 	case "assert-podman-args-regex":
 		ok = t.assertStartPodmanArgsRegex(args, unit)
+	case "assert-podman-args-key-val":
+		ok = t.assertStartPodmanArgsKeyVal(args, unit)
+	case "assert-podman-args-key-val-regex":
+		ok = t.assertStartPodmanArgsKeyValRegex(args, unit)
 	case "assert-podman-final-args":
 		ok = t.assertStartPodmanFinalArgs(args, unit)
 	case "assert-podman-final-args-regex":
@@ -354,6 +427,15 @@ var _ = Describe("quadlet system generator", func() {
 
 	})
 
+	Describe("quadlet -version", func() {
+		It("Should print correct version", func() {
+			session := podmanTest.Quadlet([]string{"-version"}, "/something")
+			session.WaitWithDefaultTimeout()
+			Expect(session).Should(Exit(0))
+			Expect(session.OutputToString()).To(Equal(version.Version.String()))
+		})
+	})
+
 	Describe("Running quadlet dryrun tests", func() {
 		It("Should exit with an error because of no files are found to parse", func() {
 			fileName := "basic.kube"
@@ -365,7 +447,7 @@ var _ = Describe("quadlet system generator", func() {
 
 			session := podmanTest.Quadlet([]string{"-dryrun"}, "/something")
 			session.WaitWithDefaultTimeout()
-			Expect(session).Should(Exit(1))
+			Expect(session).Should(Exit(0))
 
 			current := session.ErrorToStringArray()
 			expected := "No files to parse from [/something]"
@@ -376,6 +458,12 @@ var _ = Describe("quadlet system generator", func() {
 		It("Should parse a kube file and print it to stdout", func() {
 			fileName := "basic.kube"
 			testcase := loadQuadletTestcase(filepath.Join("quadlet", fileName))
+
+			// quadlet uses PODMAN env to get a stable podman path
+			podmanPath, found := os.LookupEnv("PODMAN")
+			if !found {
+				podmanPath = podmanTest.PodmanBinary
+			}
 
 			// Write the tested file to the quadlet dir
 			err = os.WriteFile(filepath.Join(quadletDir, fileName), testcase.data, 0644)
@@ -390,12 +478,12 @@ var _ = Describe("quadlet system generator", func() {
 				"---basic.service---",
 				"## assert-podman-args \"kube\"",
 				"## assert-podman-args \"play\"",
-				"## assert-podman-final-args-regex /tmp/podman_test.*/quadlet/deployment.yml",
+				"## assert-podman-final-args-regex .*/podman_test.*/quadlet/deployment.yml",
 				"## assert-podman-args \"--replace\"",
 				"## assert-podman-args \"--service-container=true\"",
 				"## assert-podman-stop-args \"kube\"",
 				"## assert-podman-stop-args \"down\"",
-				"## assert-podman-stop-final-args-regex /tmp/podman_test.*/quadlet/deployment.yml",
+				"## assert-podman-stop-final-args-regex .*/podman_test.*/quadlet/deployment.yml",
 				"## assert-key-is \"Unit\" \"RequiresMountsFor\" \"%t/containers\"",
 				"## assert-key-is \"Service\" \"KillMode\" \"mixed\"",
 				"## assert-key-is \"Service\" \"Type\" \"notify\"",
@@ -413,8 +501,8 @@ var _ = Describe("quadlet system generator", func() {
 				"Type=notify",
 				"NotifyAccess=all",
 				"SyslogIdentifier=%N",
-				fmt.Sprintf("ExecStart=/usr/local/bin/podman kube play --replace --service-container=true %s/deployment.yml", quadletDir),
-				fmt.Sprintf("ExecStop=/usr/local/bin/podman kube down %s/deployment.yml", quadletDir),
+				fmt.Sprintf("ExecStart=%s kube play --replace --service-container=true %s/deployment.yml", podmanPath, quadletDir),
+				fmt.Sprintf("ExecStop=%s kube down %s/deployment.yml", podmanPath, quadletDir),
 			}
 
 			Expect(expected).To(Equal(current))
@@ -430,7 +518,7 @@ var _ = Describe("quadlet system generator", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			// Run quadlet to convert the file
-			session := podmanTest.Quadlet([]string{"-no-kmsg-log", generatedDir}, quadletDir)
+			session := podmanTest.Quadlet([]string{"--user", "-no-kmsg-log", generatedDir}, quadletDir)
 			session.WaitWithDefaultTimeout()
 			Expect(session).Should(Exit(0))
 
@@ -447,12 +535,14 @@ var _ = Describe("quadlet system generator", func() {
 		Entry("basepodman.container", "basepodman.container"),
 		Entry("capabilities.container", "capabilities.container"),
 		Entry("capabilities2.container", "capabilities2.container"),
+		Entry("disableselinux.container", "disableselinux.container"),
 		Entry("devices.container", "devices.container"),
 		Entry("env.container", "env.container"),
 		Entry("escapes.container", "escapes.container"),
 		Entry("exec.container", "exec.container"),
 		Entry("image.container", "image.container"),
 		Entry("install.container", "install.container"),
+		Entry("ip.container", "ip.container"),
 		Entry("label.container", "label.container"),
 		Entry("name.container", "name.container"),
 		Entry("network.container", "network.container"),
@@ -460,6 +550,8 @@ var _ = Describe("quadlet system generator", func() {
 		Entry("noimage.container", "noimage.container"),
 		Entry("notify.container", "notify.container"),
 		Entry("oneshot.container", "oneshot.container"),
+		Entry("rootfs.container", "rootfs.container"),
+		Entry("selinux.container", "selinux.container"),
 		Entry("other-sections.container", "other-sections.container"),
 		Entry("podmanargs.container", "podmanargs.container"),
 		Entry("ports.container", "ports.container"),
@@ -474,10 +566,16 @@ var _ = Describe("quadlet system generator", func() {
 		Entry("remap-manual.container", "remap-manual.container"),
 		Entry("remap-auto.container", "remap-auto.container"),
 		Entry("remap-auto2.container", "remap-auto2.container"),
+		Entry("remap-keep-id.container", "remap-keep-id.container"),
+		Entry("remap-keep-id2.container", "remap-keep-id2.container"),
 		Entry("volume.container", "volume.container"),
 		Entry("env-file.container", "env-file.container"),
 		Entry("env-host.container", "env-host.container"),
 		Entry("env-host-false.container", "env-host-false.container"),
+		Entry("secrets.container", "secrets.container"),
+		Entry("logdriver.container", "logdriver.container"),
+		Entry("mount.container", "mount.container"),
+		Entry("health.container", "health.container"),
 
 		Entry("basic.volume", "basic.volume"),
 		Entry("label.volume", "label.volume"),
@@ -495,6 +593,7 @@ var _ = Describe("quadlet system generator", func() {
 		Entry("Kube - ConfigMap", "configmap.kube"),
 		Entry("Kube - Publish IPv4 ports", "ports.kube"),
 		Entry("Kube - Publish IPv6 ports", "ports_ipv6.kube"),
+		Entry("Kube - Logdriver", "logdriver.kube"),
 
 		Entry("Network - Basic", "basic.network"),
 		Entry("Network - Label", "label.network"),

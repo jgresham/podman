@@ -142,7 +142,7 @@ var _ = Describe("Podman healthcheck run", func() {
 	})
 
 	It("podman healthcheck on stopped container", func() {
-		session := podmanTest.Podman([]string{"run", "-dt", "--name", "hc", HEALTHCHECK_IMAGE, "ls"})
+		session := podmanTest.Podman([]string{"run", "--name", "hc", HEALTHCHECK_IMAGE, "ls"})
 		session.WaitWithDefaultTimeout()
 		Expect(session).Should(Exit(0))
 
@@ -267,7 +267,7 @@ var _ = Describe("Podman healthcheck run", func() {
 		inspect = podmanTest.InspectContainer("hc")
 		Expect(inspect[0].State.Health).To(HaveField("Status", define.HealthCheckHealthy))
 
-		// Test podman ps --filter heath is working (#11687)
+		// Test podman ps --filter health is working (#11687)
 		ps := podmanTest.Podman([]string{"ps", "--filter", "health=healthy"})
 		ps.WaitWithDefaultTimeout()
 		Expect(ps).Should(Exit(0))
@@ -297,20 +297,17 @@ var _ = Describe("Podman healthcheck run", func() {
 
 		podmanTest.AddImageToRWStore(ALPINE)
 		// Write target and fake files
-		targetPath, err := CreateTempDirInTempDir()
-		Expect(err).ToNot(HaveOccurred())
 		containerfile := fmt.Sprintf(`FROM %s
 HEALTHCHECK CMD ls -l / 2>&1`, ALPINE)
-		containerfilePath := filepath.Join(targetPath, "Containerfile")
+		containerfilePath := filepath.Join(podmanTest.TempDir, "Containerfile")
 		err = os.WriteFile(containerfilePath, []byte(containerfile), 0644)
 		Expect(err).ToNot(HaveOccurred())
 		defer func() {
 			Expect(os.Chdir(cwd)).To(Succeed())
-			Expect(os.RemoveAll(targetPath)).To(Succeed())
 		}()
 
 		// make cwd as context root path
-		Expect(os.Chdir(targetPath)).To(Succeed())
+		Expect(os.Chdir(podmanTest.TempDir)).To(Succeed())
 
 		session := podmanTest.Podman([]string{"build", "--format", "docker", "-t", "test", "."})
 		session.WaitWithDefaultTimeout()
@@ -366,7 +363,7 @@ HEALTHCHECK CMD ls -l / 2>&1`, ALPINE)
 		inspect = podmanTest.InspectContainer(ctrName)
 		Expect(inspect[0].State.Health).To(HaveField("Status", define.HealthCheckHealthy))
 
-		// Test podman ps --filter heath is working (#11687)
+		// Test podman ps --filter health is working (#11687)
 		ps := podmanTest.Podman([]string{"ps", "--filter", "health=healthy"})
 		ps.WaitWithDefaultTimeout()
 		Expect(ps).Should(Exit(0))

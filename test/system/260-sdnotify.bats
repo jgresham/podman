@@ -110,7 +110,7 @@ function _assert_mainpid_is_conmon() {
     run_podman run -d --name sdnotify_conmon_c \
                --sdnotify=conmon \
                $IMAGE \
-               sh -c 'printenv NOTIFY_SOCKET;echo READY;while ! test -f /stop;do sleep 0.1;done'
+               sh -c 'printenv NOTIFY_SOCKET;echo READY;sleep 999'
     cid="$output"
     wait_for_ready $cid
 
@@ -135,9 +135,7 @@ READY=1" "sdnotify sent MAINPID and READY"
     _assert_mainpid_is_conmon "$output"
 
     # Done. Stop container, clean up.
-    run_podman exec $cid touch /stop
-    run_podman wait $cid
-    run_podman rm $cid
+    run_podman rm -f -t0 $cid
     _stop_socat
 }
 
@@ -153,7 +151,7 @@ READY=1" "sdnotify sent MAINPID and READY"
     _start_socat
 
     run_podman run -d --sdnotify=container $SYSTEMD_IMAGE \
-               sh -c 'printenv NOTIFY_SOCKET; echo READY; while ! test -f /stop;do sleep 0.1;done;systemd-notify --ready'
+               sh -c 'trap "touch /stop" SIGUSR1;printenv NOTIFY_SOCKET; echo READY; while ! test -f /stop;do sleep 0.1;done;systemd-notify --ready'
     cid="$output"
     wait_for_ready $cid
 
@@ -174,8 +172,8 @@ READY=1" "sdnotify sent MAINPID and READY"
 
     is "$output" "MAINPID=$mainPID" "Container is not ready yet, so we only know the main PID"
 
-    # Done. Stop container, clean up.
-    run_podman exec $cid touch /stop
+    # Done. Tell container to stop itself, and clean up
+    run_podman kill -s USR1 $cid
     run_podman wait $cid
 
     wait_for_file $_SOCAT_LOG
@@ -203,10 +201,20 @@ spec:
   restartPolicy: "Never"
   containers:
   - command:
-    - true
+    - /bin/sh
+    - -c
+    - 'while :; do if test -e /rain/tears; then exit 0; fi; sleep 1; done'
     image: $IMAGE
     name: test
     resources: {}
+    volumeMounts:
+    - mountPath: /rain:z
+      name: test-mountdir
+  volumes:
+  - hostPath:
+      path: $PODMAN_TMPDIR
+      type: Directory
+    name: test-mountdir
 EOF
 
     # The name of the service container is predictable: the first 12 characters
@@ -218,8 +226,15 @@ EOF
     _start_socat
     wait_for_file $_SOCAT_LOG
 
-    # Will run until all containers have stopped.
     run_podman play kube --service-container=true --log-driver journald $yaml_source
+
+    # The service container is the main PID since no container has a custom
+    # sdnotify policy.
+    run_podman container inspect $service_container --format "{{.State.ConmonPid}}"
+    main_pid="$output"
+
+    # Tell pod to finish, then wait for all containers to stop
+    touch $PODMAN_TMPDIR/tears
     run_podman container wait $service_container test_pod-test
 
     # Make sure the containers have the correct policy.
@@ -233,7 +248,7 @@ ignore"
     echo "$output"
 
     # The "with policies" test below checks the MAINPID.
-    is "$output" "MAINPID=.*
+    is "$output" "MAINPID=$main_pid
 READY=1" "sdnotify sent MAINPID and READY"
 
     _stop_socat
@@ -244,6 +259,8 @@ READY=1" "sdnotify sent MAINPID and READY"
 }
 
 @test "sdnotify : play kube - with policies" {
+    skip_if_journald_unavailable
+
     # Pull that image. Retry in case of flakes.
     run_podman pull $SYSTEMD_IMAGE || \
         run_podman pull $SYSTEMD_IMAGE || \
@@ -327,8 +344,10 @@ ignore"
     # potential issues.
     run_podman exec --env NOTIFY_SOCKET="/run/notify/notify.sock" $container_a /usr/bin/systemd-notify --ready
 
-    # Instruct the container to stop
-    run_podman exec $container_a /bin/touch /stop
+    # Instruct the container to stop.
+    # Run detached as the `exec` session races with the cleanup process
+    # of the exiting container (see #10825).
+    run_podman exec -d $container_a /bin/touch /stop
 
     run_podman container wait $container_a
     run_podman container inspect $container_a --format "{{.State.ExitCode}}"

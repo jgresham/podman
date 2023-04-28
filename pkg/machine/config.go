@@ -17,22 +17,22 @@ import (
 )
 
 type InitOptions struct {
-	CPUS         uint64
-	DiskSize     uint64
-	IgnitionPath string
-	ImagePath    string
-	Volumes      []string
-	VolumeDriver string
-	IsDefault    bool
-	Memory       uint64
-	Name         string
-	TimeZone     string
-	URI          url.URL
-	Username     string
-	ReExec       bool
-	Rootful      bool
-	// The numerical userid of the user that called machine
-	UID string
+	CPUS               uint64
+	DiskSize           uint64
+	IgnitionPath       string
+	ImagePath          string
+	Volumes            []string
+	VolumeDriver       string
+	IsDefault          bool
+	Memory             uint64
+	Name               string
+	TimeZone           string
+	URI                url.URL
+	Username           string
+	ReExec             bool
+	Rootful            bool
+	UID                string // uid of the user that called machine
+	UserModeNetworking *bool  // nil = use backend/system default, false = disable, true = enable
 }
 
 type Status = string
@@ -47,14 +47,17 @@ const (
 	DefaultMachineName string = "podman-machine-default"
 )
 
-type Provider interface {
-	NewMachine(opts InitOptions) (VM, error)
-	LoadVMByName(name string) (VM, error)
-	List(opts ListOptions) ([]*ListResponse, error)
-	IsValidVMName(name string) (bool, error)
+type VirtProvider interface {
+	Artifact() Artifact
 	CheckExclusiveActiveVM() (bool, string, error)
+	Compression() ImageCompression
+	Format() ImageFormat
+	IsValidVMName(name string) (bool, error)
+	List(opts ListOptions) ([]*ListResponse, error)
+	LoadVMByName(name string) (VM, error)
+	NewMachine(opts InitOptions) (VM, error)
 	RemoveAndCleanMachines() error
-	VMType() string
+	VMType() VMType
 }
 
 type RemoteConnectionType string
@@ -72,10 +75,10 @@ var (
 
 type Download struct {
 	Arch                  string
-	Artifact              string
+	Artifact              Artifact
 	CompressionType       string
 	CacheDir              string
-	Format                string
+	Format                ImageFormat
 	ImageName             string
 	LocalPath             string
 	LocalUncompressedFile string
@@ -88,26 +91,28 @@ type Download struct {
 type ListOptions struct{}
 
 type ListResponse struct {
-	Name           string
-	CreatedAt      time.Time
-	LastUp         time.Time
-	Running        bool
-	Starting       bool
-	Stream         string
-	VMType         string
-	CPUs           uint64
-	Memory         uint64
-	DiskSize       uint64
-	Port           int
-	RemoteUsername string
-	IdentityPath   string
+	Name               string
+	CreatedAt          time.Time
+	LastUp             time.Time
+	Running            bool
+	Starting           bool
+	Stream             string
+	VMType             string
+	CPUs               uint64
+	Memory             uint64
+	DiskSize           uint64
+	Port               int
+	RemoteUsername     string
+	IdentityPath       string
+	UserModeNetworking bool
 }
 
 type SetOptions struct {
-	CPUs     *uint64
-	DiskSize *uint64
-	Memory   *uint64
-	Rootful  *bool
+	CPUs               *uint64
+	DiskSize           *uint64
+	Memory             *uint64
+	Rootful            *bool
+	UserModeNetworking *bool
 }
 
 type SSHOptions struct {
@@ -148,15 +153,16 @@ type DistributionDownload interface {
 	CleanCache() error
 }
 type InspectInfo struct {
-	ConfigPath     VMFile
-	ConnectionInfo ConnectionConfig
-	Created        time.Time
-	Image          ImageConfig
-	LastUp         time.Time
-	Name           string
-	Resources      ResourceConfig
-	SSHConfig      SSHConfig
-	State          Status
+	ConfigPath         VMFile
+	ConnectionInfo     ConnectionConfig
+	Created            time.Time
+	Image              ImageConfig
+	LastUp             time.Time
+	Name               string
+	Resources          ResourceConfig
+	SSHConfig          SSHConfig
+	State              Status
+	UserModeNetworking bool
 }
 
 func (rc RemoteConnectionType) MakeSSHURL(host, path, port, userName string) url.URL {
@@ -180,7 +186,7 @@ func (rc RemoteConnectionType) MakeSSHURL(host, path, port, userName string) url
 }
 
 // GetCacheDir returns the dir where VM images are downloaded into when pulled
-func GetCacheDir(vmType string) (string, error) {
+func GetCacheDir(vmType VMType) (string, error) {
 	dataDir, err := GetDataDir(vmType)
 	if err != nil {
 		return "", err
@@ -194,12 +200,12 @@ func GetCacheDir(vmType string) (string, error) {
 
 // GetDataDir returns the filepath where vm images should
 // live for podman-machine.
-func GetDataDir(vmType string) (string, error) {
+func GetDataDir(vmType VMType) (string, error) {
 	dataDirPrefix, err := DataDirPrefix()
 	if err != nil {
 		return "", err
 	}
-	dataDir := filepath.Join(dataDirPrefix, vmType)
+	dataDir := filepath.Join(dataDirPrefix, vmType.String())
 	if _, err := os.Stat(dataDir); !errors.Is(err, os.ErrNotExist) {
 		return dataDir, nil
 	}
@@ -219,12 +225,12 @@ func DataDirPrefix() (string, error) {
 
 // GetConfigDir returns the filepath to where configuration
 // files for podman-machine should live
-func GetConfDir(vmType string) (string, error) {
+func GetConfDir(vmType VMType) (string, error) {
 	confDirPrefix, err := ConfDirPrefix()
 	if err != nil {
 		return "", err
 	}
-	confDir := filepath.Join(confDirPrefix, vmType)
+	confDir := filepath.Join(confDirPrefix, vmType.String())
 	if _, err := os.Stat(confDir); !errors.Is(err, os.ErrNotExist) {
 		return confDir, nil
 	}
@@ -373,4 +379,37 @@ type SSHConfig struct {
 type ConnectionConfig struct {
 	// PodmanSocket is the exported podman service socket
 	PodmanSocket *VMFile `json:"PodmanSocket"`
+	// PodmanPipe is the exported podman service named pipe (Windows hosts only)
+	PodmanPipe *VMFile `json:"PodmanPipe"`
 }
+
+type VMType int64
+
+const (
+	QemuVirt VMType = iota
+	WSLVirt
+	AppleHvVirt
+	HyperVVirt
+)
+
+func (v VMType) String() string {
+	switch v {
+	case WSLVirt:
+		return "wsl"
+	case AppleHvVirt:
+		return "applehv"
+	case HyperVVirt:
+		return "hyperv"
+	}
+	return "qemu"
+}
+
+type APIForwardingState int
+
+const (
+	NoForwarding APIForwardingState = iota
+	ClaimUnsupported
+	NotInstalled
+	MachineLocal
+	DockerGlobal
+)

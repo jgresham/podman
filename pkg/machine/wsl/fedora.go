@@ -1,5 +1,5 @@
-//go:build amd64 || arm64
-// +build amd64 arm64
+//go:build windows
+// +build windows
 
 package wsl
 
@@ -27,7 +27,7 @@ type FedoraDownload struct {
 	machine.Download
 }
 
-func NewFedoraDownloader(vmType, vmName, releaseStream string) (machine.DistributionDownload, error) {
+func NewFedoraDownloader(vmType machine.VMType, vmName, releaseStream string) (machine.DistributionDownload, error) {
 	downloadURL, version, arch, size, err := getFedoraDownload()
 	if err != nil {
 		return nil, err
@@ -43,9 +43,9 @@ func NewFedoraDownloader(vmType, vmName, releaseStream string) (machine.Distribu
 	f := FedoraDownload{
 		Download: machine.Download{
 			Arch:      machine.GetFcosArch(),
-			Artifact:  "",
+			Artifact:  machine.None,
 			CacheDir:  cacheDir,
-			Format:    machine.Format,
+			Format:    machine.Tar,
 			ImageName: imageName,
 			LocalPath: filepath.Join(cacheDir, imageName),
 			URL:       downloadURL,

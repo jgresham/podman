@@ -14,7 +14,7 @@ Key       | Host User |  Container User
 ----------|---------------|---------------------
 ""        |$UID         |0 (Default User account mapped to root user in container.)
 keep-id   |$UID         |$UID (Map user account to same UID within container.)
-keep-id:uid=200,gid=210 |$UID| 200:210 (Map user account to specified uid, gid value within container.)
+keep-id:uid=200,gid=210 |$UID| 200:210 (Map user account to specified UID, GID value within container.)
 auto      |$UID         | nil (Host User UID is not mapped into container.)
 nomap     |$UID         | nil (Host User UID is not mapped into container.)
 
@@ -26,9 +26,11 @@ The `--userns=auto` flag requires that the user name __containers__ be specified
 
 Example: `containers:2147483647:2147483648`.
 
-Podman allocates unique ranges of UIDs and GIDs from the `containers` subordinate user ids. The size of the ranges is based on the number of UIDs required in the image. The number of UIDs and GIDs can be overridden with the `size` option.
+Podman allocates unique ranges of UIDs and GIDs from the `containers` subordinate user IDs. The size of the ranges is based on the number of UIDs required in the image. The number of UIDs and GIDs can be overridden with the `size` option.
 
-The rootless option `--userns=keep-id` uses all the subuids and subgids of the user. Using `--userns=auto` when starting new containers will not work as long as any containers exist that were started with `--userns=keep-id`.
+The option `--userns=keep-id` uses all the subuids and subgids of the user.
+The option `--userns=nomap` uses all the subuids and subgids of the user except the user's own ID.
+Using `--userns=auto` when starting new containers will consequently not work as long as any containers exist that were started with `--userns=keep-id` or `--userns=nomap`.
 
   Valid `auto` options:
 
@@ -40,12 +42,12 @@ The rootless option `--userns=keep-id` uses all the subuids and subgids of the u
 
 **host**: run in the user namespace of the caller. The processes running in the container will have the same privileges on the host as any other process launched by the calling user (default).
 
-**keep-id**: creates a user namespace where the current rootless user's UID:GID are mapped to the same values in the container. This option is not allowed for containers created by the root user.
+**keep-id**: creates a user namespace where the current user's UID:GID are mapped to the same values in the container. For containers created by root, the current mapping is created into a new user namespace.
 
   Valid `keep-id` options:
 
-  - *uid*=UID: override the UID inside the container that will be used to map the current rootless user to.
-  - *gid*=GID: override the GID inside the container that will be used to map the current rootless user to.
+  - *uid*=UID: override the UID inside the container that will be used to map the current user to.
+  - *gid*=GID: override the GID inside the container that will be used to map the current user to.
 
 **nomap**: creates a user namespace where the current rootless user's UID:GID are not mapped into the container. This option is not allowed for containers created by the root user.
 

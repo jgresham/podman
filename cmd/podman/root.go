@@ -423,6 +423,9 @@ func rootFlags(cmd *cobra.Command, podmanConfig *entities.PodmanConfig) {
 		}
 		podmanConfig.Remote = true
 	} else {
+		// A *hidden* flag to change the database backend.
+		pFlags.StringVar(&podmanConfig.ContainersConf.Engine.DBBackend, "db-backend", podmanConfig.ContainersConfDefaultsRO.Engine.DBBackend, "Database backend to use")
+
 		cgroupManagerFlagName := "cgroup-manager"
 		pFlags.StringVar(&podmanConfig.ContainersConf.Engine.CgroupManager, cgroupManagerFlagName, podmanConfig.ContainersConfDefaultsRO.Engine.CgroupManager, "Cgroup manager to use (\"cgroupfs\"|\"systemd\")")
 		_ = cmd.RegisterFlagCompletionFunc(cgroupManagerFlagName, common.AutocompleteCgroupManager)
@@ -457,6 +460,7 @@ func rootFlags(cmd *cobra.Command, podmanConfig *entities.PodmanConfig) {
 		namespaceFlagName := "namespace"
 		pFlags.StringVar(&podmanConfig.ContainersConf.Engine.Namespace, namespaceFlagName, podmanConfig.ContainersConfDefaultsRO.Engine.Namespace, "Set the libpod namespace, used to create separate views of the containers and pods on the system")
 		_ = cmd.RegisterFlagCompletionFunc(namespaceFlagName, completion.AutocompleteNone)
+		_ = pFlags.MarkHidden(namespaceFlagName)
 
 		networkBackendFlagName := "network-backend"
 		pFlags.StringVar(&podmanConfig.ContainersConf.Network.NetworkBackend, networkBackendFlagName, podmanConfig.ContainersConfDefaultsRO.Network.NetworkBackend, `Network backend to use ("cni"|"netavark")`)
@@ -497,6 +501,7 @@ func rootFlags(cmd *cobra.Command, podmanConfig *entities.PodmanConfig) {
 		// Hide these flags for both ABI and Tunneling
 		for _, f := range []string{
 			"cpu-profile",
+			"db-backend",
 			"default-mounts-file",
 			"max-workers",
 			"memory-profile",

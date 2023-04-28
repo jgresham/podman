@@ -16,7 +16,7 @@ set +a
 
 req_env_vars CI DEST_BRANCH IMAGE_SUFFIX TEST_FLAVOR TEST_ENVIRON \
              PODBIN_NAME PRIV_NAME DISTRO_NV AUTOMATION_LIB_PATH \
-             SCRIPT_BASE CIRRUS_WORKING_DIR FEDORA_NAME UBUNTU_NAME \
+             SCRIPT_BASE CIRRUS_WORKING_DIR FEDORA_NAME \
              VM_IMAGE_NAME
 
 # Defined by the CI system
@@ -27,6 +27,11 @@ msg "Checking Cirrus YAML"
 # Defined by CI config.
 # shellcheck disable=SC2154
 showrun $SCRIPT_BASE/cirrus_yaml_test.py
+
+msg "Checking for leading tabs in system tests"
+if grep -n ^$'\t' test/system/*; then
+    die "Found leading tabs in system tests. Use spaces to indent, not tabs."
+fi
 
 # Defined by CI config.
 # shellcheck disable=SC2154
@@ -45,8 +50,15 @@ if [[ "${DISTRO_NV}" =~ fedora ]]; then
     # Tests for lib.sh
     showrun ${SCRIPT_BASE}/lib.sh.t
 
-    export PREBUILD=1
-    showrun bash ${CIRRUS_WORKING_DIR}/.github/actions/check_cirrus_cron/test.sh
+    # Run this during daily cron job to prevent a GraphQL API change/breakage
+    # from impacting every PR.  Down-side being if it does fail, a maintainer
+    # will need to do some archaeology to find it.
+    # Defined by CI system
+    # shellcheck disable=SC2154
+    if [[ "$CIRRUS_CRON" == "main" ]]; then
+      export PREBUILD=1
+      showrun bash ${CIRRUS_WORKING_DIR}/.github/actions/check_cirrus_cron/test.sh
+    fi
 fi
 
 msg "Checking 3rd party network service connectivity"

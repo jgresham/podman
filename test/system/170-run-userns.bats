@@ -49,8 +49,7 @@ function _require_crun() {
 
     # Remove the pod and the pause image
     run_podman pod rm $random_pod_name
-    run_podman version --format "{{.Server.Version}}-{{.Server.Built}}"
-    run_podman rmi -f localhost/podman-pause:$output
+    run_podman rmi -f $(pause_image)
 }
 
 @test "podman --remote --group-add keep-groups " {
@@ -84,7 +83,7 @@ function _require_crun() {
 userns="auto"
 EOF
     # First make sure a user namespace is created
-    CONTAINERS_CONF=$PODMAN_TMPDIR/userns_auto.conf run_podman run -d $IMAGE sleep infinity
+    CONTAINERS_CONF_OVERRIDE=$PODMAN_TMPDIR/userns_auto.conf run_podman run -d $IMAGE sleep infinity
     cid=$output
 
     run_podman inspect --format '{{.HostConfig.UsernsMode}}' $cid
@@ -93,7 +92,7 @@ EOF
     run_podman rm -t 0 -f $cid
 
     # Then check that the main user is not mapped into the user namespace
-    CONTAINERS_CONF=$PODMAN_TMPDIR/userns_auto.conf run_podman 0 run --rm $IMAGE awk '{if($2 == "0"){exit 1}}' /proc/self/uid_map /proc/self/gid_map
+    CONTAINERS_CONF_OVERRIDE=$PODMAN_TMPDIR/userns_auto.conf run_podman 0 run --rm $IMAGE awk '{if($2 == "0"){exit 1}}' /proc/self/uid_map /proc/self/gid_map
 }
 
 @test "podman userns=auto and secrets" {
@@ -131,25 +130,16 @@ EOF
 }
 
 @test "podman userns=keep-id" {
-    if is_rootless; then
-        user=$(id -u)
-        run_podman run --rm --userns=keep-id $IMAGE id -u
-        is "${output}" "$user" "Container should run as the current user"
-    else
-        run_podman 125 run --rm --userns=keep-id $IMAGE id -u
-        is "${output}" "Error: keep-id is only supported in rootless mode" "Container should fail to start since keep-id is not supported in rootful mode"
-    fi
+    user=$(id -u)
+    run_podman run --rm --userns=keep-id $IMAGE id -u
+    is "${output}" "$user" "Container should run as the current user"
 }
 
 @test "podman userns=keep-id in a pod" {
-    if is_rootless; then
-        user=$(id -u)
-	run_podman pod create --userns keep-id
-	pid=$output
-        run_podman run --rm --pod $pid $IMAGE id -u
-        is "${output}" "$user" "Container should run as the current user"
-    else
-	run_podman 125 pod create --userns keep-id
-        is "${output}" 'Error:.*keep-id is only supported in rootless mode' "pod should fail to be created since keep-id is not supported in rootful mode"
-    fi
+    user=$(id -u)
+    run_podman pod create --userns keep-id
+    pid=$output
+    run_podman run --rm --pod $pid $IMAGE id -u
+    is "${output}" "$user" "Container should run as the current user"
+    run_podman rmi -f $(pause_image)
 }

@@ -62,7 +62,7 @@ function teardown() {
 
 
 @test "podman pod create - custom infra image" {
-    skip_if_remote "CONTAINERS_CONF only affects server side"
+    skip_if_remote "CONTAINERS_CONF_OVERRIDE only affects server side"
     image="i.do/not/exist:image"
     tmpdir=$PODMAN_TMPDIR/pod-test
     mkdir -p $tmpdir
@@ -75,10 +75,10 @@ EOF
     run_podman 125 pod create --infra-image $image
     is "$output" ".*initializing source docker://$image:.*"
 
-    CONTAINERS_CONF=$containersconf run_podman 125 pod create
+    CONTAINERS_CONF_OVERRIDE=$containersconf run_podman 125 pod create
     is "$output" ".*initializing source docker://$image:.*"
 
-    CONTAINERS_CONF=$containersconf run_podman 125 create --pod new:test $IMAGE
+    CONTAINERS_CONF_OVERRIDE=$containersconf run_podman 125 create --pod new:test $IMAGE
     is "$output" ".*initializing source docker://$image:.*"
 }
 
@@ -325,7 +325,7 @@ EOF
 
 @test "podman pod create should fail when infra-name is already in use" {
     local infra_name="infra_container_$(random_string 10 | tr A-Z a-z)"
-    local infra_image="k8s.gcr.io/pause:3.5"
+    local infra_image="registry.k8s.io/pause:3.5"
     local pod_name="$(random_string 10 | tr A-Z a-z)"
 
     run_podman --noout pod create --name $pod_name --infra-name "$infra_name" --infra-image "$infra_image"

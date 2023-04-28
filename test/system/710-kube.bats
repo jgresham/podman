@@ -105,25 +105,65 @@ metadata.creationTimestamp | =~ | [0-9T:-]\\+Z
 metadata.labels.app        | =  | ${pname}
 metadata.name              | =  | ${pname}
 
-spec.hostname                              | =  | $pname
-spec.restartPolicy                         | =  | Never
+spec.hostname                              | =  | null
 
 spec.containers[0].command                 | =  | [\"top\"]
 spec.containers[0].image                   | =  | $IMAGE
 spec.containers[0].name                    | =  | $cname1
 spec.containers[0].ports[0].containerPort  | =  | 8888
 spec.containers[0].ports[0].hostPort       | =  | 9999
-spec.containers[0].resources               | =  | {}
+spec.containers[0].resources               | =  | null
 
 spec.containers[1].command                 | =  | [\"bottom\"]
 spec.containers[1].image                   | =  | $IMAGE
 spec.containers[1].name                    | =  | $cname2
 spec.containers[1].ports                   | =  | null
-spec.containers[1].resources               | =  | {}
+spec.containers[1].resources               | =  | null
 
 spec.containers[0].securityContext.capabilities  | =  | $capabilities
 
-status  | =  | {}
+status  | =  | null
+"
+
+    while read key op expect; do
+        actual=$(jq -r -c ".$key" <<<"$json")
+        assert "$actual" $op "$expect" ".$key"
+    done < <(parse_table "$expect")
+
+    run_podman rm $cname1 $cname2
+    run_podman pod rm $pname
+    run_podman rmi $(pause_image)
+}
+
+@test "podman kube generate - deployment" {
+    skip_if_remote "containersconf needs to be set on server side"
+    local pname=p$(random_string 15)
+    local cname1=c1$(random_string 15)
+    local cname2=c2$(random_string 15)
+
+    run_podman pod create --name $pname
+    run_podman container create --name $cname1 --pod $pname $IMAGE top
+    run_podman container create --name $cname2 --pod $pname $IMAGE bottom
+
+    containersconf=$PODMAN_TMPDIR/containers.conf
+    cat >$containersconf <<EOF
+[engine]
+kube_generate_type="deployment"
+EOF
+    CONTAINERS_CONF_OVERRIDE=$containersconf run_podman kube generate $pname
+
+    json=$(yaml2json <<<"$output")
+    # For debugging purposes in the event we regress, we can see the generate output to know what went wrong
+    jq . <<<"$json"
+
+    # See container test above for description of this table
+    expect="
+apiVersion | =  | apps/v1
+kind       | =  | Deployment
+
+metadata.creationTimestamp | =~ | [0-9T:-]\\+Z
+metadata.labels.app        | =  | ${pname}
+metadata.name              | =  | ${pname}-deployment
 "
 
     while read key op expect; do

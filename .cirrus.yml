@@ -25,22 +25,24 @@ env:
 
     ####
     #### Cache-image names to test with (double-quotes around names are critical)
-    #### Comment out fedora-35 for podman 4.x branches.
     ####
-    FEDORA_NAME: "fedora-37"
+    FEDORA_NAME: "fedora-38"
     FEDORA_AARCH64_NAME: "${FEDORA_NAME}-aarch64"
-    PRIOR_FEDORA_NAME: "fedora-36"
-    UBUNTU_NAME: "ubuntu-2204"
+    PRIOR_FEDORA_NAME: "fedora-37"
+    RAWHIDE_NAME: "rawhide"
+    DEBIAN_NAME: "debian-12"
 
     # Image identifiers
-    IMAGE_SUFFIX: "c5841131699699712"
+    IMAGE_SUFFIX: "c20230426t140447z-f38f37d12"
+
     # EC2 images
     FEDORA_AMI: "fedora-aws-${IMAGE_SUFFIX}"
     FEDORA_AARCH64_AMI: "fedora-podman-aws-arm64-${IMAGE_SUFFIX}"
     # GCP Images
     FEDORA_CACHE_IMAGE_NAME: "fedora-${IMAGE_SUFFIX}"
     PRIOR_FEDORA_CACHE_IMAGE_NAME: "prior-fedora-${IMAGE_SUFFIX}"
-    #UBUNTU_CACHE_IMAGE_NAME: "ubuntu-${IMAGE_SUFFIX}"
+    RAWHIDE_CACHE_IMAGE_NAME: "rawhide-${IMAGE_SUFFIX}"
+    DEBIAN_CACHE_IMAGE_NAME: "debian-${IMAGE_SUFFIX}"
     # Container FQIN's
     FEDORA_CONTAINER_FQIN: "quay.io/libpod/fedora_podman:${IMAGE_SUFFIX}"
     PRIOR_FEDORA_CONTAINER_FQIN: "quay.io/libpod/prior-fedora_podman:${IMAGE_SUFFIX}"
@@ -53,9 +55,10 @@ env:
     TEST_ENVIRON: host       # 'host', or 'container'
     PODBIN_NAME: podman      # 'podman' or 'remote'
     PRIV_NAME: root          # 'root' or 'rootless'
-    DISTRO_NV:               # any {PRIOR_,}{FEDORA,UBUNTU}_NAME value
+    DISTRO_NV:               # any {PRIOR_,}{FEDORA,DEBIAN}_NAME value
     VM_IMAGE_NAME:           # One of the "Google-cloud VM Images" (above)
     CTR_FQIN:                # One of the "Container FQIN's" (above)
+    CI_DESIRED_DATABASE: boltdb # One of "", "sqlite", "boltdb"
 
     # Curl-command prefix for downloading task artifacts, simply add the
     # the url-encoded task name, artifact name, and path as a suffix.
@@ -104,18 +107,32 @@ build_task:
               # ID for re-use of build output
               CI_DESIRED_RUNTIME: crun
               CI_DESIRED_NETWORK: netavark
+              CI_DESIRED_DATABASE: boltdb
+        - env: &sqliteenvvars
+              DISTRO_NV: ${FEDORA_NAME}
+              # Not used here, is used in other tasks
+              VM_IMAGE_NAME: ${FEDORA_CACHE_IMAGE_NAME}
+              CTR_FQIN: ${FEDORA_CONTAINER_FQIN}
+              # ID for re-use of build output
+              CI_DESIRED_RUNTIME: crun
+              CI_DESIRED_NETWORK: netavark
+              CI_DESIRED_DATABASE: sqlite
         - env: &priorfedora_envvars
               DISTRO_NV: ${PRIOR_FEDORA_NAME}
               VM_IMAGE_NAME: ${PRIOR_FEDORA_CACHE_IMAGE_NAME}
               CTR_FQIN: ${PRIOR_FEDORA_CONTAINER_FQIN}
               CI_DESIRED_RUNTIME: crun
               CI_DESIRED_NETWORK: cni
-        #- env: &ubuntu_envvars
-        #      DISTRO_NV: ${UBUNTU_NAME}
-        #      VM_IMAGE_NAME: ${UBUNTU_CACHE_IMAGE_NAME}
-        #      CTR_FQIN: ${UBUNTU_CONTAINER_FQIN}
-        #      CI_DESIRED_RUNTIME: runc
-        #      CI_DESIRED_NETWORK: whatever
+        - env:
+              <<: *sqliteenvvars
+              DISTRO_NV: ${RAWHIDE_NAME}
+              VM_IMAGE_NAME: ${RAWHIDE_CACHE_IMAGE_NAME}
+              CTR_FQIN: ""
+        - env: &debian_envvars
+              DISTRO_NV: ${DEBIAN_NAME}
+              VM_IMAGE_NAME: ${DEBIAN_CACHE_IMAGE_NAME}
+              CI_DESIRED_RUNTIME: runc
+              CI_DESIRED_NETWORK: netavark
     env:
         TEST_FLAVOR: build
     # NOTE: The default way Cirrus-CI clones is *NOT* compatible with
@@ -139,22 +156,6 @@ build_task:
           _gc='git config --file /root/.gitconfig'
           $_gc user.email "TMcTestFace@example.com"
           $_gc user.name "Testy McTestface"
-          # Nightly dependency-bump job: fetch latest versions of the
-          # Big Three dependencies, and run full CI test suite. Notification
-          # email will go out to monitor-list upon failure.
-          if [[ "$CIRRUS_CRON" = "treadmill" ]]; then
-              for pkg in common image/v5 storage; do
-                  echo "go mod edit --require containers/$pkg@main"
-                  go mod edit --require github.com/containers/$pkg@main
-                  make vendor
-              done
-              git add vendor
-              # Show what changed.
-              echo "git diff go.mod, then git diff --stat:"
-              git diff go.mod
-              git diff --stat
-              HOME=/root git commit --allow-empty -asm"Bump containers/common,image,storage"
-          fi
     # Attempt to prevent flakes by confirming basic environment expectations,
     # network service connectivity and essential container image availability.
     prebuild_script: &prebuild $SCRIPT_BASE/prebuild.sh
@@ -184,6 +185,9 @@ build_aarch64_task:
     # Multiarch doesn't depend on buildability in this automation context
     # Docs: ./contrib/cirrus/CIModes.md
     only_if: "$CIRRUS_CRON != 'multiarch'"
+    # Enable labeling of EC2 VMs with cirrus task ID. TODO: This can be
+    # removed when the feature goes mainstream.
+    experimental: true
     ec2_instance: &standard_build_ec2_aarch64
         image: ${VM_IMAGE_NAME}
         type: ${EC2_INST_TYPE}
@@ -216,7 +220,7 @@ build_aarch64_task:
 # This confirms the binaries can be executed, checks --help vs docs, and
 # other essential post-build validation checks.
 validate_task:
-    name: "Validate $DISTRO_NV Build"
+    name: "Validate ${DISTRO_NV} Build"
     alias: validate
     # This task is primarily intended to catch human-errors early on, in a
     # PR.  Skip it for branch-push, branch-create, and tag-push to improve
@@ -232,9 +236,16 @@ validate_task:
         <<: *standardvm
         cpu: 8
         memory: "16Gb"
+    matrix:
+        - env:
+            <<: *stdenvars
+            VM_IMAGE_NAME: ${FEDORA_CACHE_IMAGE_NAME}
+            DISTRO_NV: ${FEDORA_NAME}
+        - env:
+            <<: *stdenvars
+            VM_IMAGE_NAME: ${RAWHIDE_CACHE_IMAGE_NAME}
+            DISTRO_NV: ${RAWHIDE_NAME}
     env:
-        <<: *stdenvars
-        DISTRO_NV: ${FEDORA_NAME}
         TEST_FLAVOR: validate
     # N/B: This script depends on ${DISTRO_NV} being defined for the task.
     clone_script: &get_gosrc |
@@ -262,7 +273,7 @@ validate_aarch64_task:
     only_if: *is_pr
     depends_on:
         - build_aarch64
-    # golangci-lint is a very, very hungry beast.
+    experimental: true  # Enable labeling of EC2 VMs with cirrus task ID
     ec2_instance: *standard_build_ec2_aarch64
     env:
         <<: *stdenvars_aarch64
@@ -368,8 +379,6 @@ alt_build_task:
             ALT_NAME: 'Windows Cross'
       - env:
             ALT_NAME: 'Build Without CGO'
-      - env:
-            ALT_NAME: 'Test build podman-next Copr RPM'
       - env:
             ALT_NAME: 'Alt Arch. Cross'
       - env:
@@ -538,6 +547,7 @@ windows_smoke_test_task:
         $CIRRUS_CHANGE_TITLE !=~ '.*CI:COPR.*'
     depends_on:
       - alt_build
+    experimental: true  # Enable labeling of EC2 VMs with cirrus task ID
     ec2_instance:
         image: "${WINDOWS_AMI}"
         type: m5zn.metal
@@ -555,11 +565,11 @@ windows_smoke_test_task:
 local_integration_test_task: &local_integration_test_task
     # Integration-test task name convention:
     # <int.|sys.> <podman|remote> <Distro NV> <root|rootless>
-    name: &std_name_fmt "$TEST_FLAVOR $PODBIN_NAME $DISTRO_NV $PRIV_NAME $TEST_ENVIRON"
+    name: &std_name_fmt "$TEST_FLAVOR $PODBIN_NAME $DISTRO_NV $PRIV_NAME $TEST_ENVIRON ${CI_DESIRED_DATABASE}"
     alias: local_integration_test
     # Docs: ./contrib/cirrus/CIModes.md
     only_if: *not_tag_branch_build_docs
-    depends_on:
+    depends_on: &build_unit
         - build
         - unit_test
     matrix: *platform_axis
@@ -595,9 +605,7 @@ container_integration_test_task:
     alias: container_integration_test
     # Docs: ./contrib/cirrus/CIModes.md
     only_if: *not_tag_branch_build_docs
-    depends_on:
-        - build
-        - unit_test
+    depends_on: *build_unit
     matrix: &fedora_vm_axis
         - env:
               DISTRO_NV: ${FEDORA_NAME}
@@ -628,9 +636,7 @@ rootless_integration_test_task:
     alias: rootless_integration_test
     # Docs: ./contrib/cirrus/CIModes.md
     only_if: *not_tag_branch_build_docs
-    depends_on:
-        - build
-        - unit_test
+    depends_on: *build_unit
     matrix: *platform_axis
     gce_instance: *standardvm
     timeout_in: 90m
@@ -660,6 +666,7 @@ podman_machine_task:
         - remote_integration_test
         - container_integration_test
         - rootless_integration_test
+    experimental: true  # Enable labeling of EC2 VMs with cirrus task ID
     ec2_instance:
         image: "${VM_IMAGE_NAME}"
         type: "${EC2_INST_TYPE}"
@@ -691,6 +698,7 @@ podman_machine_aarch64_task:
         - remote_integration_test
         - container_integration_test
         - rootless_integration_test
+    experimental: true  # Enable labeling of EC2 VMs with cirrus task ID
     ec2_instance:
         <<: *standard_build_ec2_aarch64
     env:
@@ -706,6 +714,29 @@ podman_machine_aarch64_task:
     always: *machine_logs_benchmarks
 
 
+bench_stuff_task:
+    name: Record machine benchmarks
+    alias: bench_stuff
+    # Only run on merge and never for cirrus-cron.
+    only_if: $CIRRUS_BRANCH == 'main' && $CIRRUS_CRON == ''
+    depends_on:
+        - podman_machine
+        - podman_machine_aarch64
+    gce_instance: *standardvm
+    env:
+        <<: *stdenvars
+        PR: podman run -it --rm -v /tmp/data:/tmp/data:Z -w /tmp/data
+        GACJSON: ENCRYPTED[acd4a8bd843dab6dd135c379a2819546187fd2c7ce43e5839c6db4c798ed652f5b456f5d1716afef662554ee94e098ee]
+    clone_script: &noop mkdir -p $CIRRUS_WORKING_DIR
+    script:
+        - mkdir /tmp/data
+        # Download benchmark.env and benchmark.csv from podman-machine tasks
+        - $PR quay.io/libpod/ccia $CIRRUS_BUILD_ID benchmark/data
+        - podman secret create --env GACJSON GACJSON
+        # Parse and upload benchmark data to GCE firestore database
+        - $PR --secret GACJSON -e GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/GACJSON quay.io/libpod/bench_stuff ./$CIRRUS_BUILD_ID
+
+
 # Always run subsequent to integration tests.  While parallelism is lost
 # with runtime, debugging system-test failures can be more challenging
 # for some golang developers.  Otherwise the following tasks run across
@@ -714,9 +745,7 @@ local_system_test_task: &local_system_test_task
     name: *std_name_fmt
     alias: local_system_test
     only_if: *not_tag_build_docs_multiarch
-    depends_on:
-        - build
-        - local_integration_test
+    depends_on: *build_unit
     matrix: *platform_axis
     gce_instance: *standardvm
     env:
@@ -735,7 +764,8 @@ local_system_test_aarch64_task: &local_system_test_task_aarch64
     only_if: *not_tag_build_docs_multiarch
     depends_on:
         - build_aarch64
-        - local_integration_test
+        - unit_test
+    experimental: true  # Enable labeling of EC2 VMs with cirrus task ID
     ec2_instance: *standard_build_ec2_aarch64
     env:
         <<: *stdenvars_aarch64
@@ -750,9 +780,6 @@ local_system_test_aarch64_task: &local_system_test_task_aarch64
 remote_system_test_task:
     <<: *local_system_test_task
     alias: remote_system_test
-    depends_on:
-        - build
-        - remote_integration_test
     env:
         TEST_FLAVOR: sys
         PODBIN_NAME: remote
@@ -761,9 +788,6 @@ remote_system_test_task:
 remote_system_test_aarch64_task:
     <<: *local_system_test_task_aarch64
     alias: remote_system_test_aarch64
-    depends_on:
-        - build_aarch64
-        - remote_integration_test
     env:
         TEST_FLAVOR: sys
         PODBIN_NAME: remote
@@ -781,9 +805,6 @@ rootless_remote_system_test_task:
               CI_DESIRED_NETWORK: netavark
     <<: *local_system_test_task
     alias: rootless_remote_system_test
-    depends_on:
-        - build
-        - remote_integration_test
     gce_instance: *standardvm
     env:
         TEST_FLAVOR: sys
@@ -796,9 +817,7 @@ rootless_system_test_task:
     alias: rootless_system_test
     # Docs: ./contrib/cirrus/CIModes.md
     only_if: *not_tag_build_docs_multiarch
-    depends_on:
-        - build
-        - rootless_integration_test
+    depends_on: *build_unit
     matrix: *platform_axis
     gce_instance: *standardvm
     env:
@@ -836,12 +855,8 @@ buildah_bud_test_task:
         - build
         - local_integration_test
     env:
+        <<: *stdenvars
         TEST_FLAVOR: bud
-        DISTRO_NV: ${FEDORA_NAME}
-        # Not used here, is used in other tasks
-        VM_IMAGE_NAME: ${FEDORA_CACHE_IMAGE_NAME}
-        CTR_FQIN: ${FEDORA_CONTAINER_FQIN}
-        CI_DESIRED_NETWORK: netavark
     matrix:
         - env:
             PODBIN_NAME: podman
@@ -854,34 +869,29 @@ buildah_bud_test_task:
     main_script: *main
     always: *int_logs_artifacts
 
-
-#rootless_gitlab_test_task:
-#    name: *std_name_fmt
-#    alias: rootless_gitlab_test
-#    # Docs: ./contrib/cirrus/CIModes.md
-#    only_if: &cirrus_cron "${CIRRUS_CRON} == 'main'"
-#    # Community-maintained downstream test may fail unexpectedly.
-#    # Ref. repository: https://gitlab.com/gitlab-org/gitlab-runner
-#    # If necessary, uncomment the next line and file issue(s) with details.
-#    # allow_failures: $CI == $CI
-#    depends_on:
-#        - build
-#        - rootless_integration_test
-#    gce_instance: *standardvm
-#    env:
-#        <<: *ubuntu_envvars
-#        TEST_FLAVOR: 'gitlab'
-#        PRIV_NAME: rootless
-#    clone_script: *get_gosrc
-#    setup_script: *setup
-#    main_script: *main
-#    always:
-#        <<: *logs_artifacts
-#        junit_artifacts:
-#            path: gitlab-runner-podman.xml
-#            type: text/xml
-#            format: junit
-
+rootless_buildah_bud_test_task:
+    name: *std_name_fmt
+    alias: rootless_buildah_bud_test
+    # Please keep this as-is: the buildah treadmill (#13808) relies on it.
+    only_if: $CIRRUS_CRON == 'treadmill'
+    depends_on:
+        - build
+        - rootless_integration_test
+    env:
+        <<: *stdenvars
+        TEST_FLAVOR: bud
+        PRIV_NAME: rootless
+    matrix:
+        - env:
+            PODBIN_NAME: podman
+        - env:
+            PODBIN_NAME: remote
+    gce_instance: *standardvm
+    timeout_in: 45m
+    clone_script: *get_gosrc
+    setup_script: *setup
+    main_script: *main
+    always: *int_logs_artifacts
 
 upgrade_test_task:
     name: "Upgrade test: from $PODMAN_UPGRADE_FROM"
@@ -972,11 +982,11 @@ meta_task:
         image: quay.io/libpod/imgts:latest
     env:
         # Space-separated list of images used by this repository state
-        # DISABLED:
-        #   ${UBUNTU_CACHE_IMAGE_NAME}
         IMGNAMES: >-
             ${FEDORA_CACHE_IMAGE_NAME}
             ${PRIOR_FEDORA_CACHE_IMAGE_NAME}
+            ${RAWHIDE_CACHE_IMAGE_NAME}
+            ${DEBIAN_CACHE_IMAGE_NAME}
             build-push-${IMAGE_SUFFIX}
         EC2IMGNAMES: >-
           ${FEDORA_AARCH64_AMI}
@@ -988,7 +998,7 @@ meta_task:
         GCPJSON: ENCRYPTED[3a198350077849c8df14b723c0f4c9fece9ebe6408d35982e7adf2105a33f8e0e166ed3ed614875a0887e1af2b8775f4]
         GCPNAME: ENCRYPTED[2f9738ef295a706f66a13891b40e8eaa92a89e0e87faf8bed66c41eca72bf76cfd190a6f2d0e8444c631fdf15ed32ef6]
         GCPPROJECT: libpod-218412
-    clone_script: &noop mkdir -p $CIRRUS_WORKING_DIR
+    clone_script: *noop
     script: /usr/local/bin/entrypoint.sh
 
 
@@ -1028,7 +1038,7 @@ success_task:
         - rootless_remote_system_test
         - minikube_test
         - buildah_bud_test
-        #- rootless_gitlab_test
+        - rootless_buildah_bud_test
         - upgrade_test
         - image_build
         - meta
@@ -1093,12 +1103,6 @@ artifacts_task:
         - tar xjf repo.tbz
         - mv ./podman-remote-release-darwin_*.zip $CIRRUS_WORKING_DIR/
         - mv ./contrib/pkginstaller/out/podman-installer-macos-*.pkg $CIRRUS_WORKING_DIR/
-    benchmarks_script:
-        - mkdir -p /tmp/benchmarks
-        - cd /tmp/benchmarks
-        - $ARTCURL/podman_machine/benchmark.zip
-        - unzip benchmark.zip
-        - mv ./data/benchmarks.{env,csv} $CIRRUS_WORKING_DIR/
     always:
       contents_script: ls -la $CIRRUS_WORKING_DIR
       # Produce downloadable files and an automatic zip-file accessible

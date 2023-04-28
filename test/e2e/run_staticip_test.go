@@ -40,26 +40,26 @@ var _ = Describe("Podman run with --ip flag", func() {
 	})
 
 	It("Podman run --ip with garbage address", func() {
-		result := podmanTest.Podman([]string{"run", "-ti", "--ip", "114232346", ALPINE, "ls"})
+		result := podmanTest.Podman([]string{"run", "--ip", "114232346", ALPINE, "ls"})
 		result.WaitWithDefaultTimeout()
 		Expect(result).To(ExitWithError())
 	})
 
 	It("Podman run --ip with v6 address", func() {
-		result := podmanTest.Podman([]string{"run", "-ti", "--ip", "2001:db8:bad:beef::1", ALPINE, "ls"})
+		result := podmanTest.Podman([]string{"run", "--ip", "2001:db8:bad:beef::1", ALPINE, "ls"})
 		result.WaitWithDefaultTimeout()
 		Expect(result).To(ExitWithError())
 	})
 
 	It("Podman run --ip with non-allocatable IP", func() {
-		result := podmanTest.Podman([]string{"run", "-ti", "--ip", "203.0.113.124", ALPINE, "ls"})
+		result := podmanTest.Podman([]string{"run", "--ip", "203.0.113.124", ALPINE, "ls"})
 		result.WaitWithDefaultTimeout()
 		Expect(result).To(ExitWithError())
 	})
 
 	It("Podman run with specified static IP has correct IP", func() {
 		ip := GetRandomIPAddress()
-		result := podmanTest.Podman([]string{"run", "-ti", "--ip", ip, ALPINE, "ip", "addr"})
+		result := podmanTest.Podman([]string{"run", "--ip", ip, ALPINE, "ip", "addr"})
 		result.WaitWithDefaultTimeout()
 		Expect(result).Should(Exit(0))
 		Expect(result.OutputToString()).To(ContainSubstring(ip + "/16"))
@@ -73,7 +73,7 @@ var _ = Describe("Podman run with --ip flag", func() {
 		defer podmanTest.removeNetwork(netName)
 		Expect(net).To(Exit(0))
 
-		result := podmanTest.Podman([]string{"run", "-ti", "--network", netName, "--ip6", ipv6, ALPINE, "ip", "addr"})
+		result := podmanTest.Podman([]string{"run", "--network", netName, "--ip6", ipv6, ALPINE, "ip", "addr"})
 		result.WaitWithDefaultTimeout()
 		Expect(result).Should(Exit(0))
 		Expect(result.OutputToString()).To(ContainSubstring(ipv6 + "/64"))
@@ -81,7 +81,7 @@ var _ = Describe("Podman run with --ip flag", func() {
 
 	It("Podman run with --network bridge:ip=", func() {
 		ip := GetRandomIPAddress()
-		result := podmanTest.Podman([]string{"run", "-ti", "--network", "bridge:ip=" + ip, ALPINE, "ip", "addr"})
+		result := podmanTest.Podman([]string{"run", "--network", "bridge:ip=" + ip, ALPINE, "ip", "addr"})
 		result.WaitWithDefaultTimeout()
 		Expect(result).Should(Exit(0))
 		Expect(result.OutputToString()).To(ContainSubstring(ip + "/16"))
@@ -91,7 +91,7 @@ var _ = Describe("Podman run with --ip flag", func() {
 		ip := GetRandomIPAddress()
 		mac := "44:33:22:11:00:99"
 		intName := "myeth"
-		result := podmanTest.Podman([]string{"run", "-ti", "--network", "bridge:ip=" + ip + ",mac=" + mac + ",interface_name=" + intName, ALPINE, "ip", "addr"})
+		result := podmanTest.Podman([]string{"run", "--network", "bridge:ip=" + ip + ",mac=" + mac + ",interface_name=" + intName, ALPINE, "ip", "addr"})
 		result.WaitWithDefaultTimeout()
 		Expect(result).Should(Exit(0))
 		Expect(result.OutputToString()).To(ContainSubstring(ip + "/16"))
@@ -105,15 +105,15 @@ var _ = Describe("Podman run with --ip flag", func() {
 		result.WaitWithDefaultTimeout()
 		Expect(result).Should(Exit(0))
 
-		// We need to set "no_proxy" in proxy environment
-		if env, found := os.LookupEnv("no_proxy"); found {
-			defer os.Setenv("no_proxy", env)
-		} else {
-			defer os.Unsetenv("no_proxy")
+		// This test should not use a proxy
+		client := &http.Client{
+			Transport: &http.Transport{
+				Proxy: nil,
+			},
 		}
-		os.Setenv("no_proxy", ip)
+
 		for retries := 20; retries > 0; retries-- {
-			response, err := http.Get(fmt.Sprintf("http://%s", ip))
+			response, err := client.Get(fmt.Sprintf("http://%s", ip))
 			if err == nil && response.StatusCode == http.StatusOK {
 				break
 			}

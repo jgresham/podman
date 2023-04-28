@@ -4,6 +4,7 @@
 package machine
 
 import (
+	"archive/zip"
 	"bufio"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -20,8 +22,8 @@ import (
 	"github.com/containers/storage/pkg/archive"
 	"github.com/sirupsen/logrus"
 	"github.com/ulikunitz/xz"
-	"github.com/vbauerster/mpb/v7"
-	"github.com/vbauerster/mpb/v7/decor"
+	"github.com/vbauerster/mpb/v8"
+	"github.com/vbauerster/mpb/v8/decor"
 )
 
 // GenericDownload is used when a user provides a URL
@@ -31,7 +33,7 @@ type GenericDownload struct {
 }
 
 // NewGenericDownloader is used when the disk image is provided by the user
-func NewGenericDownloader(vmType, vmName, pullPath string) (DistributionDownload, error) {
+func NewGenericDownloader(vmType VMType, vmName, pullPath string) (DistributionDownload, error) {
 	var (
 		imageName string
 	)
@@ -45,11 +47,7 @@ func NewGenericDownloader(vmType, vmName, pullPath string) (DistributionDownload
 	}
 	dl := Download{}
 	// Is pullpath a file or url?
-	getURL, err := url2.Parse(pullPath)
-	if err != nil {
-		return nil, err
-	}
-	if len(getURL.Scheme) > 0 {
+	if getURL := supportedURL(pullPath); getURL != nil {
 		urlSplit := strings.Split(getURL.Path, "/")
 		imageName = urlSplit[len(urlSplit)-1]
 		dl.URL = getURL
@@ -61,27 +59,40 @@ func NewGenericDownloader(vmType, vmName, pullPath string) (DistributionDownload
 	}
 	dl.VMName = vmName
 	dl.ImageName = imageName
-	dl.LocalUncompressedFile = filepath.Join(dataDir, imageName)
+	dl.LocalUncompressedFile = dl.GetLocalUncompressedFile(dataDir)
 	// The download needs to be pulled into the datadir
 
 	gd := GenericDownload{Download: dl}
 	return gd, nil
 }
 
-func (d Download) GetLocalUncompressedFile(dataDir string) string {
-	var (
-		extension string
-	)
-	switch {
-	case strings.HasSuffix(d.LocalPath, ".bz2"):
-		extension = ".bz2"
-	case strings.HasSuffix(d.LocalPath, ".gz"):
-		extension = ".gz"
-	case strings.HasSuffix(d.LocalPath, ".xz"):
-		extension = ".xz"
+func supportedURL(path string) (url *url2.URL) {
+	getURL, err := url2.Parse(path)
+	if err != nil {
+		// ignore error, probably not a URL, fallback & treat as file path
+		return nil
 	}
-	uncompressedFilename := d.VMName + "_" + d.ImageName
-	return filepath.Join(dataDir, strings.TrimSuffix(uncompressedFilename, extension))
+
+	// Check supported scheme. Since URL is passed to net.http, only http
+	// schemes are supported. Also, windows drive paths can resemble a
+	// URL, but with a single letter scheme. These values should be
+	// passed through for interpretation as a file path.
+	switch getURL.Scheme {
+	case "http":
+		fallthrough
+	case "https":
+		return getURL
+	default:
+		return nil
+	}
+}
+
+func (d Download) GetLocalUncompressedFile(dataDir string) string {
+	compressedFilename := d.VMName + "_" + d.ImageName
+	extension := compressionFromFile(compressedFilename)
+	uncompressedFile := strings.TrimSuffix(compressedFilename, fmt.Sprintf(".%s", extension.String()))
+	d.LocalUncompressedFile = filepath.Join(dataDir, uncompressedFile)
+	return d.LocalUncompressedFile
 }
 
 func (g GenericDownload) Get() *Download {
@@ -186,6 +197,7 @@ func DownloadVMImage(downloadURL *url2.URL, imageName string, localImagePath str
 }
 
 func Decompress(localPath, uncompressedPath string) error {
+	var isZip bool
 	uncompressedFileWriter, err := os.OpenFile(uncompressedPath, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return err
@@ -194,24 +206,29 @@ func Decompress(localPath, uncompressedPath string) error {
 	if err != nil {
 		return err
 	}
-
+	if strings.HasSuffix(localPath, ".zip") {
+		isZip = true
+	}
 	compressionType := archive.DetectCompression(sourceFile)
-	if compressionType != archive.Uncompressed {
+	if compressionType != archive.Uncompressed || isZip {
 		fmt.Println("Extracting compressed file")
 	}
 	if compressionType == archive.Xz {
 		return decompressXZ(localPath, uncompressedFileWriter)
 	}
+	if isZip && runtime.GOOS == "windows" {
+		return decompressZip(localPath, uncompressedFileWriter)
+	}
 	return decompressEverythingElse(localPath, uncompressedFileWriter)
 }
 
-// Will error out if file without .xz already exists
+// Will error out if file without .Xz already exists
 // Maybe extracting then renaming is a good idea here..
-// depends on xz: not pre-installed on mac, so it becomes a brew dependency
+// depends on Xz: not pre-installed on mac, so it becomes a brew dependency
 func decompressXZ(src string, output io.WriteCloser) error {
 	var read io.Reader
 	var cmd *exec.Cmd
-	// Prefer xz utils for fastest performance, fallback to go xi2 impl
+	// Prefer Xz utils for fastest performance, fallback to go xi2 impl
 	if _, err := exec.LookPath("xz"); err == nil {
 		cmd = exec.Command("xz", "-d", "-c", "-k", src)
 		read, err = cmd.StdoutPipe()
@@ -270,6 +287,32 @@ func decompressEverythingElse(src string, output io.WriteCloser) error {
 	}()
 
 	_, err = io.Copy(output, uncompressStream)
+	return err
+}
+
+func decompressZip(src string, output io.WriteCloser) error {
+	zipReader, err := zip.OpenReader(src)
+	if err != nil {
+		return err
+	}
+	if len(zipReader.File) != 1 {
+		return errors.New("machine image files should consist of a single compressed file")
+	}
+	f, err := zipReader.File[0].Open()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := f.Close(); err != nil {
+			logrus.Error(err)
+		}
+	}()
+	defer func() {
+		if err := output.Close(); err != nil {
+			logrus.Error(err)
+		}
+	}()
+	_, err = io.Copy(output, f)
 	return err
 }
 

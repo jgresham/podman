@@ -74,6 +74,9 @@ func convertLibpodNetworktoDockerNetwork(runtime *libpod.Runtime, network *netty
 	for _, con := range cons {
 		data, err := con.Inspect(false)
 		if err != nil {
+			if errors.Is(err, define.ErrNoSuchCtr) || errors.Is(err, define.ErrCtrRemoved) {
+				continue
+			}
 			return nil, err
 		}
 		if netData, ok := data.NetworkSettings.Networks[network.Name]; ok {
@@ -277,10 +280,17 @@ func CreateNetwork(w http.ResponseWriter, r *http.Request) {
 		// FIXME can we use the IPAM driver and options?
 	}
 
+	opts := nettypes.NetworkCreateOptions{
+		IgnoreIfExists: !networkCreate.CheckDuplicate,
+	}
 	ic := abi.ContainerEngine{Libpod: runtime}
-	newNetwork, err := ic.NetworkCreate(r.Context(), network, nil)
+	newNetwork, err := ic.NetworkCreate(r.Context(), network, &opts)
 	if err != nil {
-		utils.InternalServerError(w, err)
+		if errors.Is(err, nettypes.ErrNetworkExists) {
+			utils.Error(w, http.StatusConflict, err)
+		} else {
+			utils.InternalServerError(w, err)
+		}
 		return
 	}
 

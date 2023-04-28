@@ -17,8 +17,8 @@ const sizeWithUnitFormat = "(format: `<number>[<unit>]`, where unit = b (bytes),
 var podmanConfig = registry.PodmanConfig()
 
 // ContainerToPodOptions takes the Container and Pod Create options, assigning the matching values back to podCreate for the purpose of the libpod API
-// For this function to succeed, the JSON tags in PodCreateOptions and ContainerCreateOptions need to match due to the Marshaling and Unmarshaling done.
-// The types of the options also need to match or else the unmarshaling will fail even if the tags match
+// For this function to succeed, the JSON tags in PodCreateOptions and ContainerCreateOptions need to match due to the Marshalling and Unmarshalling done.
+// The types of the options also need to match or else the unmarshalling will fail even if the tags match
 func ContainerToPodOptions(containerCreate *entities.ContainerCreateOptions, podCreate *entities.PodCreateOptions) error {
 	contMarshal, err := json.Marshal(containerCreate)
 	if err != nil {
@@ -397,7 +397,7 @@ func DefineCreateFlags(cmd *cobra.Command, cf *entities.ContainerCreateOptions, 
 		createFlags.BoolVar(
 			&cf.Rm,
 			"rm", false,
-			"Remove container (and pod if created) after exit",
+			"Remove container and any anonymous unnamed volume associated with the container after exit",
 		)
 		createFlags.BoolVar(
 			&cf.RootFS,
@@ -604,6 +604,10 @@ func DefineCreateFlags(cmd *cobra.Command, cf *entities.ContainerCreateOptions, 
 		createFlags.StringVar(&cf.PasswdEntry, passwdEntryName, "", "Entry to write to /etc/passwd")
 		_ = cmd.RegisterFlagCompletionFunc(passwdEntryName, completion.AutocompleteNone)
 
+		groupEntryName := "group-entry"
+		createFlags.StringVar(&cf.GroupEntry, groupEntryName, "", "Entry to write to /etc/group")
+		_ = cmd.RegisterFlagCompletionFunc(groupEntryName, completion.AutocompleteNone)
+
 		decryptionKeysFlagName := "decryption-key"
 		createFlags.StringSliceVar(
 			&cf.DecryptionKeys,
@@ -637,6 +641,13 @@ func DefineCreateFlags(cmd *cobra.Command, cf *entities.ContainerCreateOptions, 
 			"Size of /dev/shm "+sizeWithUnitFormat,
 		)
 		_ = cmd.RegisterFlagCompletionFunc(shmSizeFlagName, completion.AutocompleteNone)
+
+		shmSizeSystemdFlagName := "shm-size-systemd"
+		createFlags.String(
+			shmSizeSystemdFlagName, "",
+			"Size of systemd specific tmpfs mounts (/run, /run/lock) "+sizeWithUnitFormat,
+		)
+		_ = cmd.RegisterFlagCompletionFunc(shmSizeSystemdFlagName, completion.AutocompleteNone)
 
 		sysctlFlagName := "sysctl"
 		createFlags.StringSliceVar(
@@ -780,15 +791,15 @@ func DefineCreateFlags(cmd *cobra.Command, cf *entities.ContainerCreateOptions, 
 		)
 		_ = cmd.RegisterFlagCompletionFunc(pidFlagName, AutocompleteNamespace)
 
-		volumeDesciption := "Bind mount a volume into the container"
+		volumeDescription := "Bind mount a volume into the container"
 		if registry.IsRemote() {
-			volumeDesciption = "Bind mount a volume into the container. Volume source will be on the server machine, not the client"
+			volumeDescription = "Bind mount a volume into the container. Volume source will be on the server machine, not the client"
 		}
 		volumeFlagName := "volume"
 		createFlags.StringArrayVarP(
 			&cf.Volume,
 			volumeFlagName, "v", cf.Volume,
-			volumeDesciption,
+			volumeDescription,
 		)
 		_ = cmd.RegisterFlagCompletionFunc(volumeFlagName, AutocompleteVolumeFlag)
 
@@ -893,8 +904,7 @@ func DefineCreateFlags(cmd *cobra.Command, cf *entities.ContainerCreateOptions, 
 		_ = cmd.RegisterFlagCompletionFunc(deviceWriteIopsFlagName, completion.AutocompleteDefault)
 
 		pidsLimitFlagName := "pids-limit"
-		createFlags.Int64Var(
-			cf.PIDsLimit,
+		createFlags.Int64(
 			pidsLimitFlagName, pidsLimit(),
 			"Tune container pids limit (set -1 for unlimited)",
 		)

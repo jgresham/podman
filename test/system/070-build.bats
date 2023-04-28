@@ -30,6 +30,11 @@ EOF
 }
 
 @test "podman buildx - basic test" {
+    run_podman info --format "{{.Store.GraphDriverName}}"
+    if [[ "$output" == "vfs" ]]; then
+        skip "Test not supported with VFS podman storage driver (#17520)"
+    fi
+
     rand_filename=$(random_string 20)
     rand_content=$(random_string 50)
 
@@ -101,6 +106,12 @@ EOF
     is "$output"   "$rand_content"   "reading generated file in image"
 
     run_podman rmi -f build_test
+
+    # Now try without specifying a context dir
+    run_podman build -t build_test -f - < $containerfile
+    is "$output" ".*COMMIT" "COMMIT seen in log"
+
+    run_podman rmi -f build_test
 }
 
 @test "podman build - global runtime flags test" {
@@ -142,7 +153,12 @@ runtime="idonotexist"
 EOF
 
     CONTAINERS_CONF="$containersconf" run_podman 125 build -t build_test $tmpdir
-    is "$output" ".*\"idonotexist\" not found.*" "failed when passing invalid OCI runtime via containers.conf"
+    is "$output" ".*\"idonotexist\" not found.*" \
+       "failed when passing invalid OCI runtime via \$CONTAINERS_CONF"
+
+    CONTAINERS_CONF_OVERRIDE="$containersconf" run_podman 125 build -t build_test $tmpdir
+    is "$output" ".*\"idonotexist\" not found.*" \
+       "failed when passing invalid OCI runtime via \$CONTAINERS_CONF_OVERRIDE"
 }
 
 # Regression from v1.5.0. This test passes fine in v1.5.0, fails in 1.6
@@ -391,7 +407,7 @@ EOF
     if is_remote; then
         ENVHOST=""
     else
-	ENVHOST="--env-host"
+        ENVHOST="--env-host"
     fi
 
     # Run without args - should run the above script. Verify its output.
@@ -578,7 +594,7 @@ EOF
 
         # Build an image. For .dockerignore
         local -a ignoreflag
-	unset ignoreflag
+        unset ignoreflag
         if [[ $ignorefile != ".dockerignore" ]]; then
             ignoreflag="--ignorefile $tmpdir/$ignorefile"
         fi
@@ -718,7 +734,7 @@ STEP 1/2: FROM $IMAGE
 STEP 2/2: RUN echo x${random2}y
 x${random2}y${remote_extra}
 COMMIT build_test${remote_extra}
---> [0-9a-f]\{11\}
+--> [0-9a-f]\{12\}
 Successfully tagged localhost/build_test:latest
 [0-9a-f]\{64\}
 a${random3}z"
@@ -925,29 +941,41 @@ EOF
 }
 
 @test "podman build COPY hardlinks " {
-    tmpdir=$PODMAN_TMPDIR/build-test
-    subdir=$tmpdir/subdir
-    subsubdir=$subdir/subsubdir
-    mkdir -p $subsubdir
+    local build_dir=$PODMAN_TMPDIR/build-test
 
-    dockerfile=$tmpdir/Dockerfile
+    mkdir -p $build_dir
+    dockerfile=$build_dir/Dockerfile
     cat >$dockerfile <<EOF
 FROM $IMAGE
 COPY . /test
 EOF
-    ln $dockerfile $tmpdir/hardlink1
-    ln $dockerfile $subdir/hardlink2
-    ln $dockerfile $subsubdir/hardlink3
 
-    run_podman build -t build_test $tmpdir
-    run_podman run --rm build_test stat -c '%i' /test/Dockerfile
-    dinode=$output
-    run_podman run --rm build_test stat -c '%i' /test/hardlink1
-    is "$output"   "$dinode"   "COPY hardlinks work"
-    run_podman run --rm build_test stat -c '%i' /test/subdir/hardlink2
-    is "$output"   "$dinode"   "COPY hardlinks work"
-    run_podman run --rm build_test stat -c '%i' /test/subdir/subsubdir/hardlink3
-    is "$output"   "$dinode"   "COPY hardlinks work"
+    # Create all our hardlinks, including their parent directories
+    local -a linkfiles=(hardlink1 subdir/hardlink2 subdir/subsubdir/hardlink3)
+    for l in "${linkfiles[@]}"; do
+        mkdir -p $(dirname $build_dir/$l)
+        ln $dockerfile $build_dir/$l
+    done
+
+    run_podman build -t build_test $build_dir
+
+    # Stat() all files in one fell swoop, because it seems impossible
+    # for inode numbers to change within the scope of one exec, but
+    # maybe they do across different runs?? fuse-overlay maybe?? #17979
+    run_podman run --rm build_test \
+               stat -c '%i %n' /test/Dockerfile "${linkfiles[@]/#//test/}"
+
+    # First output line is the inode of our reference file and its filename.
+    # Slash-replacement strips off everything after the space.
+    local dinode="${lines[0]/ */}"
+
+    # All subsequent inodes must match the first one. We check filename (%n)
+    # simply out of unwarranted paranoia.
+    local i=1
+    for l in "${linkfiles[@]}"; do
+        assert "${lines[$i]}" = "$dinode /test/$l" "line $i: inode of $l"
+        i=$((i + 1))
+    done
 
     run_podman rmi -f build_test
 }
@@ -1023,14 +1051,14 @@ EOF
 
     touch $tmpdir/empty-file.txt
     if is_remote && ! is_rootless ; then
-	# TODO: set this file's owner to a UID:GID that will not be mapped
-	# in the context where the remote server is running, which generally
-	# requires us to be root (or running with more mapped IDs) on the
-	# client, but not root (or running with fewer mapped IDs) on the
-	# remote server
-	# 4294967292:4294967292 (0xfffffffc:0xfffffffc) isn't that, but
-	# it will catch errors where a remote server doesn't apply the right
-	# default as it copies content into the container
+        # TODO: set this file's owner to a UID:GID that will not be mapped
+        # in the context where the remote server is running, which generally
+        # requires us to be root (or running with more mapped IDs) on the
+        # client, but not root (or running with fewer mapped IDs) on the
+        # remote server
+        # 4294967292:4294967292 (0xfffffffc:0xfffffffc) isn't that, but
+        # it will catch errors where a remote server doesn't apply the right
+        # default as it copies content into the container
         chown 4294967292:4294967292 $tmpdir/empty-file.txt
     fi
     cat >$tmpdir/Dockerfile <<EOF
